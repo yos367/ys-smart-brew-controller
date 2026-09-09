@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <WebServer.h>
+#include <WebSocketsServer.h>
 #include <Adafruit_MAX31865.h>
 
 // ==========================================================================
@@ -7,6 +8,15 @@
 // readings. No SSR, no PID, no recipe logic - proves the ESP32's WiFi/web
 // side can talk to a browser and to the hardware that's already wired,
 // before building anything more complex on top.
+//
+// 2026-09-07: upgraded from HTTP polling (fetch('/status') every 1s) to a
+// real WebSocket on port 81, matching UI-decisions.txt's design (JSON
+// pushed from the ESP32 every second, commands sent from the browser over
+// the same socket). Everything else - pins, calibration, relay logic,
+// safety warnings - is unchanged from the polling version. Control is
+// entirely from the browser: no physical button/encoder input exists on
+// the controller itself (EC11 encoder removed 2026-08-28, its old pins are
+// now taken by PT100 board B's SPI lines - see DECISIONS.md).
 //
 // Pins/hardware here match what's already confirmed working in src/main.cpp
 // - checked against that file directly, not assumed:
@@ -20,6 +30,10 @@
 // This is a SEPARATE PlatformIO environment (pump_web_test) - flashing it
 // replaces main.cpp on the chip while it runs. Reflash env esp32dev to get
 // the full PT100+LCD+SSR1/2+relays-latched-off system back.
+//
+// Library added for this upgrade: "links2004/WebSockets" (WebSocketsServer).
+// Added to platformio.ini lib_deps for the pump_web_test environment:
+//   links2004/WebSockets @ ^2.4.1
 //
 // ⚠️ SAFETY (per notes/DECISIONS.md):
 //  - Relay 2's real-world load is documented as 230V AC mains. Do NOT wire
@@ -80,9 +94,17 @@ Adafruit_MAX31865 pt100_a = Adafruit_MAX31865(CS_A, MOSI_A, MISO_A, SCK_A);
 Adafruit_MAX31865 pt100_b = Adafruit_MAX31865(CS_B, MOSI_B, MISO_B, SCK_B);
 
 WebServer server(80);
+WebSocketsServer webSocket(81);
 
 bool relay1On = false;
 bool relay2On = false;
+
+// How often status is pushed to every connected browser, unprompted -
+// matches UI-decisions.txt (WebSocket, JSON every second). A relay toggle
+// also triggers an immediate extra push (see onWsEvent) so the button
+// state updates right away instead of waiting up to 1s.
+#define STATUS_PUSH_MS 1000UL
+unsigned long lastStatusPushMs = 0;
 
 // Same Callendar-Van Dusen conversion as main.cpp - kept standalone on
 // purpose, matching this project's convention of independent bench-test
@@ -131,6 +153,11 @@ float readTempOnce(Adafruit_MAX31865 &sensor, const Calibration &cal) {
   return t;
 }
 
+// dir="rtl" page, WebSocket client instead of fetch()-polling. Connects to
+// ws://<device-ip>:81/ - same host the page was served from, different
+// port. Sends the bare strings "toggle1"/"toggle2" as commands; the ESP32
+// replies to everyone with a fresh status JSON right away, so all open
+// tabs/phones stay in sync with each other, not just with their own click.
 const char PAGE_HTML[] PROGMEM = R"HTML(
 <!DOCTYPE html>
 <html lang="he" dir="rtl">
@@ -148,10 +175,12 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   }
   .on  { background:#2ecc71; color:#063; }
   .off { background:#555; color:#ccc; }
+  #conn { font-size: 0.9em; color:#888; }
 </style>
 </head>
 <body>
   <h2>בדיקת חיבור — משאבות + חיישנים</h2>
+  <div id="conn">מתחבר...</div>
   <div class="row">
     <div class="temp">PT1: <span id="t1">--</span>&deg;C</div>
     <div class="temp">PT2: <span id="t2">--</span>&deg;C</div>
@@ -167,6 +196,9 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   <p id="err" style="color:#e74c3c;"></p>
 
 <script>
+let ws;
+let reconnectTimer = null;
+
 function paint(s) {
   document.getElementById('t1').textContent = s.pt1 === null ? "ERR" : s.pt1.toFixed(1);
   document.getElementById('t2').textContent = s.pt2 === null ? "ERR" : s.pt2.toFixed(1);
@@ -179,17 +211,39 @@ function paint(s) {
   document.getElementById('err').textContent = "";
 }
 
-function poll() {
-  fetch('/status').then(r => r.json()).then(paint)
-    .catch(() => { document.getElementById('err').textContent = "אין קשר לבקר"; });
+function connect() {
+  const host = window.location.hostname;
+  ws = new WebSocket("ws://" + host + ":81/");
+
+  ws.onopen = () => {
+    document.getElementById('conn').textContent = "מחובר";
+  };
+  ws.onclose = () => {
+    document.getElementById('conn').textContent = "אין קשר לבקר - מנסה שוב...";
+    document.getElementById('err').textContent = "אין קשר לבקר";
+    // Simple fixed-delay retry - good enough for a bench test on one
+    // known-good AP; a jittered/backoff retry isn't worth the complexity
+    // here.
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 1500);
+  };
+  ws.onerror = () => { ws.close(); };
+  ws.onmessage = (evt) => {
+    try {
+      paint(JSON.parse(evt.data));
+    } catch (e) {
+      // Malformed frame - ignore this one, next push corrects it.
+    }
+  };
 }
 
 function toggle(n) {
-  fetch('/relay' + n + '/toggle').then(r => r.json()).then(paint);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send('toggle' + n);
+  }
 }
 
-poll();
-setInterval(poll, 1000);
+connect();
 </script>
 </body>
 </html>
@@ -199,7 +253,9 @@ void handleRoot() {
   server.send_P(200, "text/html", PAGE_HTML);
 }
 
-void sendStatus() {
+// Builds the same JSON shape the old /status endpoint returned - only the
+// transport changed, not the data.
+String buildStatusJson() {
   float t1 = readTempOnce(pt100_a, CAL_A);
   float t2 = readTempOnce(pt100_b, CAL_B);
 
@@ -209,20 +265,51 @@ void sendStatus() {
   json += "\"relay1\":" + String(relay1On ? "true" : "false") + ",";
   json += "\"relay2\":" + String(relay2On ? "true" : "false");
   json += "}";
-
-  server.send(200, "application/json", json);
+  return json;
 }
 
-void handleRelay1Toggle() {
-  relay1On = !relay1On;
-  digitalWrite(RELAY1_PIN, relay1On ? RELAY_ON_LEVEL : RELAY_OFF_LEVEL);
-  sendStatus();
+// Sends the current status to every connected browser tab/phone, not just
+// the one that triggered it - so two open tabs never disagree about
+// whether a relay is on.
+void broadcastStatus() {
+  String json = buildStatusJson();
+  webSocket.broadcastTXT(json);
 }
 
-void handleRelay2Toggle() {
-  relay2On = !relay2On;
-  digitalWrite(RELAY2_PIN, relay2On ? RELAY_ON_LEVEL : RELAY_OFF_LEVEL);
-  sendStatus();
+// type/payload/length match the WebSocketsServer callback signature. Only
+// WStype_TEXT is handled - a client sends nothing but the two toggle
+// commands, so anything else (including binary frames) is ignored rather
+// than guessed at.
+void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED:
+      // Push status immediately to the client that just joined, instead of
+      // making it wait up to STATUS_PUSH_MS for the next scheduled tick.
+      {
+        String json = buildStatusJson();
+        webSocket.sendTXT(clientNum, json);
+      }
+      break;
+
+    case WStype_TEXT: {
+      String msg = String((char *)payload).substring(0, length);
+      if (msg == "toggle1") {
+        relay1On = !relay1On;
+        digitalWrite(RELAY1_PIN, relay1On ? RELAY_ON_LEVEL : RELAY_OFF_LEVEL);
+        broadcastStatus();
+      } else if (msg == "toggle2") {
+        relay2On = !relay2On;
+        digitalWrite(RELAY2_PIN, relay2On ? RELAY_ON_LEVEL : RELAY_OFF_LEVEL);
+        broadcastStatus();
+      }
+      // Any other text is silently ignored - unrecognised commands must
+      // never be guessed at, only known-safe ones act on the relays.
+      break;
+    }
+
+    default:
+      break;
+  }
 }
 
 void setup() {
@@ -250,15 +337,23 @@ void setup() {
   Serial.println("\"");
   Serial.print("Then open http://");
   Serial.println(WiFi.softAPIP());
+  Serial.println("WebSocket on port 81 (same IP).");
 
   server.on("/", handleRoot);
-  server.on("/status", sendStatus);
-  server.on("/relay1/toggle", handleRelay1Toggle);
-  server.on("/relay2/toggle", handleRelay2Toggle);
   server.begin();
-  Serial.println("Web server started.");
+  Serial.println("Web server started (port 80, page only).");
+
+  webSocket.begin();
+  webSocket.onEvent(onWsEvent);
+  Serial.println("WebSocket server started (port 81).");
 }
 
 void loop() {
   server.handleClient();
+  webSocket.loop();
+
+  if (millis() - lastStatusPushMs >= STATUS_PUSH_MS) {
+    lastStatusPushMs = millis();
+    broadcastStatus();
+  }
 }
