@@ -1,3 +1,10 @@
+<!-- ⚠️ SYNC NOTE: this file is the single source of truth for the boot/menu
+     page. It is embedded as a PROGMEM string literal inside src/main.cpp
+     (search for PAGE_HTML there) because there is no filesystem-serving
+     (LittleFS/SPIFFS) yet - deliberately deferred, see DECISIONS.md. After
+     editing this file, run `python scripts/embed_boot_html.py` and
+     rebuild - do not hand-copy the change into main.cpp, that is exactly
+     how the two copies drifted apart before. -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -99,6 +106,50 @@
     font-size:10px; letter-spacing:2px; color:var(--text-dimmer);
   }
 
+  /* ══ FAIL (boot sensor check) ══
+     Uses brand-orange for emphasis, not red - same reservation noted at
+     the top of this file: red/green are for real safety status only, and
+     a sensor that failed its startup check (most likely a loose connector)
+     is not itself an active safety event. */
+  #fail {
+    display:none; position:fixed; inset:0; background:var(--bg-primary);
+    flex-direction:column; align-items:center; justify-content:center;
+    text-align:center; padding:0 32px; z-index:100;
+  }
+  #fail.visible { display:flex; animation:menuIn 0.4s ease; }
+  .fail-icon {
+    width:64px; height:64px; border-radius:50%;
+    border:2px solid var(--brand-orange);
+    display:flex; align-items:center; justify-content:center;
+    font-size:28px; color:var(--brand-orange); margin-bottom:22px;
+  }
+  .fail-title {
+    font-family:'Rajdhani',sans-serif; font-weight:600;
+    font-size:18px; letter-spacing:3px; color:var(--text-primary);
+    text-transform:uppercase; margin-bottom:10px;
+  }
+  .fail-sensor {
+    font-family:'Share Tech Mono',monospace;
+    font-size:12px; letter-spacing:2px; color:var(--brand-orange);
+    margin-bottom:18px;
+  }
+  .fail-msg {
+    font-family:'Rajdhani',sans-serif; font-size:14px;
+    color:var(--text-dim); max-width:280px; line-height:1.5;
+    margin-bottom:28px;
+  }
+  .fail-retry {
+    font-family:'Rajdhani',sans-serif; font-weight:600;
+    font-size:14px; letter-spacing:2px; text-transform:uppercase;
+    color:var(--text-primary); background:var(--panel-bg);
+    border:1px solid var(--brand-orange); border-radius:4px;
+    padding:12px 32px; cursor:pointer; transition:all 0.15s ease;
+    -webkit-tap-highlight-color:transparent; user-select:none;
+  }
+  .fail-retry:hover, .fail-retry:active { background:var(--brand-orange); color:#1a1200; }
+  .fail-retry:active { transform:scale(0.97); }
+  .fail-retry:disabled { opacity:0.5; cursor:default; }
+
   /* ══ MENU ══ */
   #menu {
     display:none; position:fixed; inset:0;
@@ -185,6 +236,15 @@
   <div class="boot-ver">YS SMART BREW &middot; v1.0</div>
 </div>
 
+<!-- ══ FAIL (boot sensor check) ══ -->
+<div id="fail">
+  <div class="fail-icon">!</div>
+  <div class="fail-title">Sensor Check Failed</div>
+  <div class="fail-sensor" id="fail-sensor">SENSOR A</div>
+  <div class="fail-msg">Check that the sensor is properly connected to its connector.</div>
+  <button class="fail-retry" id="fail-retry-btn" onclick="retrySensorCheck()">Try Again</button>
+</div>
+
 <!-- ══ MENU ══ -->
 <div id="menu">
   <div class="topbar">
@@ -237,16 +297,104 @@
 </div>
 
 <script>
+// Boot-sensor-check protocol over the same WebSocket (port 81) used
+// elsewhere in this project - see boot-sensor-check-spec.md. Real status
+// text now, not a fixed timer: "checking" messages update the label as
+// the ESP32 actually works through PT1/PT2, "pass" plays the existing
+// fade-into-menu sequence, "fail" shows the retry screen instead.
 const lblEl = document.getElementById('boot-label');
-setTimeout(()=>lblEl.textContent='System ready.', 8500);
+const bootEl = document.getElementById('boot');
+const menuEl = document.getElementById('menu');
+const failEl = document.getElementById('fail');
+const failSensorEl = document.getElementById('fail-sensor');
+const retryBtn = document.getElementById('fail-retry-btn');
 
-setTimeout(()=>{
-  document.getElementById('boot').classList.add('out');
-  setTimeout(()=>{
-    document.getElementById('boot').style.display='none';
-    document.getElementById('menu').classList.add('visible');
-  }, 1000);
-}, 10200);
+const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
+const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
+
+let ws;
+let reconnectTimer = null;
+// True once this connection has actually watched a "checking" step live -
+// distinguishes a fresh boot (animate through it) from reconnecting after
+// the check already passed earlier (skip straight to the menu, per spec).
+let sawCheckingLive = false;
+
+function showMenuInstantly() {
+  bootEl.style.transition = 'none';
+  bootEl.style.display = 'none';
+  menuEl.classList.add('visible');
+}
+
+function playPassSequence() {
+  lblEl.textContent = 'Sensors OK';
+  setTimeout(() => {
+    bootEl.classList.add('out');
+    setTimeout(() => {
+      bootEl.style.display = 'none';
+      menuEl.classList.add('visible');
+    }, 1000);
+  }, 1500);
+}
+
+function showFail(sensor) {
+  bootEl.style.display = 'none';
+  failEl.classList.add('visible');
+  failSensorEl.textContent = FAIL_SENSOR_LABELS[sensor] || FAIL_SENSOR_LABELS.both;
+  retryBtn.disabled = false;
+}
+
+function handleBootCheck(msg) {
+  const bc = msg.boot_check;
+  if (!bc) return;
+
+  if (bc.status === 'checking') {
+    sawCheckingLive = true;
+    lblEl.textContent = SENSOR_LABELS[bc.sensor] || 'Checking sensors...';
+  } else if (bc.status === 'pass') {
+    if (sawCheckingLive) {
+      playPassSequence();
+    } else {
+      // Already passed before this page connected - do not replay the
+      // animation, jump straight to the menu.
+      showMenuInstantly();
+    }
+  } else if (bc.status === 'fail') {
+    showFail(bc.sensor);
+  }
+}
+
+function connect() {
+  const host = window.location.hostname;
+  ws = new WebSocket('ws://' + host + ':81/');
+
+  ws.onclose = () => {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 1500);
+  };
+  ws.onerror = () => { ws.close(); };
+  ws.onmessage = (evt) => {
+    try {
+      handleBootCheck(JSON.parse(evt.data));
+    } catch (e) {
+      // Malformed frame - ignore, next push corrects it.
+    }
+  };
+}
+
+function retrySensorCheck() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    retryBtn.disabled = true;
+    failEl.classList.remove('visible');
+    bootEl.style.display = 'flex';
+    bootEl.classList.remove('out');
+    bootEl.style.transition = '';
+    lblEl.textContent = 'Starting system...';
+    sawCheckingLive = false;
+    ws.send('recheck_sensors');
+  }
+}
+
+connect();
 </script>
 </body>
 </html>
