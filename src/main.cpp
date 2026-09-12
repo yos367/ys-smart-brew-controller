@@ -602,7 +602,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   }
 
   *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
-  html, body { width:100%; height:100%; background:var(--bg-primary); overflow:hidden; -webkit-font-smoothing:antialiased; }
+  html, body { width:100%; height:100%; background:var(--bg-primary); overflow:hidden; -webkit-font-smoothing:antialiased; -webkit-user-select:none; user-select:none; }
 
   #boot {
     position:fixed; inset:0; background:var(--bg-primary);
