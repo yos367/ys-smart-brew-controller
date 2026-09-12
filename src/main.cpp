@@ -5,6 +5,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
+#include <SPIFFS.h>
 
 // --- PT100 sensors (software SPI) ---
 // 2026-09-03: the two boards share NOTHING - each has its own SCK, MISO,
@@ -912,12 +913,12 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
 
   /* ══ IMPORT RECIPE (step 1: parse + preview only, no save yet -
      see import-file-step1-spec.md) ══ */
-  #import-recipe {
+  #import-recipe, #load-recipe {
     display:none; position:fixed; inset:0;
     background:var(--bg-primary);
     flex-direction:column; align-items:center;
   }
-  #import-recipe.visible { display:flex; animation:menuIn 0.4s ease; }
+  #import-recipe.visible, #load-recipe.visible { display:flex; animation:menuIn 0.4s ease; }
 
   .import-body {
     width:min(400px,88vw); margin-top:64px; padding-bottom:40px;
@@ -982,6 +983,13 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     font-family:'Share Tech Mono',monospace; font-size:11px;
     color:var(--text-dim);
   }
+  .recipe-row.clickable { cursor:pointer; }
+  .recipe-row.clickable:active { transform:scale(0.98); }
+
+  .import-save-row {
+    display:flex; flex-direction:column; align-items:center; gap:8px;
+    padding-top:6px;
+  }
 </style>
 </head>
 <body>
@@ -1040,7 +1048,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       </div>
       <div class="mbtn-arr">›</div>
     </div>
-    <div class="mbtn">
+    <div class="mbtn" onclick="enterLoadRecipe()">
       <div class="mbtn-icon">📋</div>
       <div class="mbtn-body">
         <div class="mbtn-title">Load Recipe</div>
@@ -1197,7 +1205,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   <div class="import-body">
     <div class="menu-heading">
       <div class="h-line"></div>
-      <div class="h-text">Import Recipe</div>
+      <div class="h-text" id="import-recipe-heading">Import Recipe</div>
       <div class="h-line r"></div>
     </div>
 
@@ -1260,7 +1268,37 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
         <div class="recipe-section-label">All Other Fields</div>
         <div class="recipe-list" id="recipe-all-fields-list"></div>
       </div>
+
+      <div class="import-save-row" id="import-save-row">
+        <button class="timer-btn" onclick="saveCurrentRecipe()">Save</button>
+        <div class="import-status" id="save-status"></div>
+      </div>
     </div>
+  </div>
+</div>
+
+<!-- ══ LOAD RECIPE ══ -->
+<div id="load-recipe">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitLoadRecipe()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="import-body">
+    <div class="menu-heading">
+      <div class="h-line"></div>
+      <div class="h-text">Load Recipe</div>
+      <div class="h-line r"></div>
+    </div>
+
+    <div class="import-status" id="load-recipe-empty" style="display:none">No saved recipes yet</div>
+    <div class="recipe-list" id="load-recipe-list"></div>
   </div>
 </div>
 
@@ -1294,6 +1332,7 @@ const cleanSetpointInput = document.getElementById('clean-setpoint-input');
 const cleanControlBtn = document.getElementById('clean-control-btn');
 const cleanControlStatus = document.getElementById('clean-control-status');
 const importRecipeEl = document.getElementById('import-recipe');
+const importRecipeHeadingEl = document.getElementById('import-recipe-heading');
 const importPickerEl = document.getElementById('import-picker');
 const importStatusEl = document.getElementById('import-status');
 const importResultEl = document.getElementById('import-result');
@@ -1316,6 +1355,11 @@ const sectionMiscEl = document.getElementById('section-misc');
 const recipeMiscListEl = document.getElementById('recipe-misc-list');
 const sectionAllFieldsEl = document.getElementById('section-all-fields');
 const recipeAllFieldsListEl = document.getElementById('recipe-all-fields-list');
+const saveStatusEl = document.getElementById('save-status');
+const importSaveRowEl = document.getElementById('import-save-row');
+const loadRecipeEl = document.getElementById('load-recipe');
+const loadRecipeListEl = document.getElementById('load-recipe-list');
+const loadRecipeEmptyEl = document.getElementById('load-recipe-empty');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
@@ -1552,11 +1596,15 @@ function exitImportRecipe() {
   importRecipeEl.classList.remove('visible');
   menuEl.classList.add('visible');
   // Reset to the picker so re-entering later starts fresh, not on
-  // whatever preview or error was last left on screen.
+  // whatever preview or error was last left on screen - including the
+  // heading/Save-row state a loaded recipe (mode 'load') would have left
+  // behind (see showRecipePreview()).
   importResultEl.classList.remove('visible');
   importPickerEl.classList.remove('hidden');
   importStatusEl.textContent = '';
   importStatusEl.classList.remove('error');
+  importRecipeHeadingEl.textContent = 'Import Recipe';
+  importSaveRowEl.style.display = '';
   document.getElementById('import-file-input').value = '';
 }
 
@@ -1590,7 +1638,22 @@ function renderRecipeSection(sectionEl, listEl, items, formatDetail) {
   renderRecipeList(listEl, list, formatDetail);
 }
 
-function showRecipePreview(recipe) {
+// Also used when a recipe is loaded from storage (see loadRecipeFile()) -
+// same generic display either way, no separate render path for "just
+// loaded" vs. "just imported". mode ('import' or 'load') only changes the
+// heading and whether Save is offered - saving an already-saved recipe
+// back to itself has no point.
+let currentRecipe = null;
+
+function showRecipePreview(recipe, mode) {
+  currentRecipe = recipe;
+  if (mode === 'load') {
+    importRecipeHeadingEl.textContent = 'Saved Recipe: ' + (recipe.name || 'Untitled Recipe');
+    importSaveRowEl.style.display = 'none';
+  } else {
+    importRecipeHeadingEl.textContent = 'Import Recipe';
+    importSaveRowEl.style.display = '';
+  }
   recipeNameEl.textContent = recipe.name || 'Untitled Recipe';
   recipeStyleEl.textContent = recipe.style || '';
   recipeStyleEl.style.display = recipe.style ? '' : 'none';
@@ -1624,6 +1687,99 @@ function showRecipePreview(recipe) {
     (f) => f.value);
   importPickerEl.classList.add('hidden');
   importResultEl.classList.add('visible');
+  saveStatusEl.textContent = '';
+  saveStatusEl.classList.remove('error');
+}
+
+// ── Save / Load Recipe (SPIFFS) ──
+// The board's SPIFFS partition caps a full path (including the leading
+// "/") at 31 characters (CONFIG_SPIFFS_OBJ_NAME_LEN=32, one byte reserved
+// for the terminator) - truncating well under that here leaves room for
+// the ".json" suffix and the leading slash the server adds.
+function sanitizeRecipeFilename(name) {
+  const base = (name || 'recipe')
+    .trim()
+    .replace(/[^a-zA-Z0-9 _-]/g, '')
+    .replace(/\s+/g, '_')
+    .slice(0, 20);
+  return (base || 'recipe') + '.json';
+}
+
+function saveCurrentRecipe() {
+  if (!currentRecipe) return;
+  const filename = sanitizeRecipeFilename(currentRecipe.name);
+  saveStatusEl.classList.remove('error');
+  saveStatusEl.textContent = 'Saving...';
+  fetch('/save_recipe?filename=' + encodeURIComponent(filename), {
+    method: 'POST',
+    body: JSON.stringify(currentRecipe),
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      saveStatusEl.textContent = 'Saved';
+    })
+    .catch(() => {
+      saveStatusEl.classList.add('error');
+      saveStatusEl.textContent = 'Could not save recipe (storage may be full).';
+    });
+}
+
+function enterLoadRecipe() {
+  menuEl.classList.remove('visible');
+  loadRecipeEl.classList.add('visible');
+  loadRecipeListEl.innerHTML = '';
+  loadRecipeEmptyEl.style.display = 'none';
+  fetch('/list_recipes')
+    .then((res) => res.json())
+    .then((files) => {
+      if (!files || files.length === 0) {
+        loadRecipeEmptyEl.textContent = 'No saved recipes yet';
+        loadRecipeEmptyEl.classList.remove('error');
+        loadRecipeEmptyEl.style.display = '';
+        return;
+      }
+      files.forEach((filename) => {
+        const row = document.createElement('div');
+        row.className = 'recipe-row clickable';
+        const name = document.createElement('div');
+        name.className = 'recipe-row-name';
+        name.textContent = filename.replace(/\.json$/, '').replace(/_/g, ' ');
+        row.appendChild(name);
+        row.onclick = () => loadRecipeFile(filename);
+        loadRecipeListEl.appendChild(row);
+      });
+    })
+    .catch(() => {
+      loadRecipeEmptyEl.textContent = 'Could not load the recipe list.';
+      loadRecipeEmptyEl.classList.add('error');
+      loadRecipeEmptyEl.style.display = '';
+    });
+}
+
+function exitLoadRecipe() {
+  loadRecipeEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+}
+
+// Reuses the exact same generic display as a fresh import (showRecipePreview)
+// rather than building a second preview UI - the loaded recipe is shown on
+// the Import Recipe screen itself.
+function loadRecipeFile(filename) {
+  fetch('/load_recipe?filename=' + encodeURIComponent(filename))
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      return res.json();
+    })
+    .then((recipe) => {
+      loadRecipeEl.classList.remove('visible');
+      importRecipeEl.classList.add('visible');
+      showRecipePreview(recipe, 'load');
+    })
+    .catch(() => {
+      loadRecipeEmptyEl.textContent = 'Could not load that recipe.';
+      loadRecipeEmptyEl.classList.add('error');
+      loadRecipeEmptyEl.style.display = '';
+    });
 }
 
 // ── BeerXML parsing (DOMParser) ──
@@ -1798,7 +1954,7 @@ function handleImportFileSelected(evt) {
         return;
       }
       importStatusEl.textContent = '';
-      showRecipePreview(recipe);
+      showRecipePreview(recipe, 'import');
     })
     .catch(() => {
       importStatusEl.classList.add('error');
@@ -5076,6 +5232,90 @@ void handleLogoTopbar() {
   server.send_P(200, "image/png", (const char *)LOGO_TOPBAR_PNG, LOGO_TOPBAR_PNG_LEN);
 }
 
+// ==========================================================================
+// Save/Load Recipe (see save-and-load-recipe-spec.md) - the ESP32 stores
+// and returns the recipe JSON as an opaque blob, exactly as the browser
+// sent it; it never parses or understands the JSON itself, same principle
+// as never touching raw BeerXML (see import-file-js-parse-spec.md).
+//
+// SPIFFS caps a full path (leading "/" included) at 31 characters
+// (CONFIG_SPIFFS_OBJ_NAME_LEN=32, one byte reserved for the terminator).
+// The client already keeps filenames well under that (see
+// sanitizeRecipeFilename() in ys-boot.html) - this is a boundary check on
+// untrusted input, not the primary defense.
+// ==========================================================================
+bool isValidRecipeFilename(const String &name) {
+  if (name.length() == 0 || name.length() > 30) return false;
+  if (!name.endsWith(".json")) return false;
+  if (name.indexOf('/') != -1 || name.indexOf("..") != -1) return false;
+  return true;
+}
+
+void handleSaveRecipe() {
+  String filename = server.arg("filename");
+  if (!isValidRecipeFilename(filename)) {
+    server.send(400, "application/json", "{\"error\":\"Invalid filename.\"}");
+    return;
+  }
+  String body = server.arg("plain");
+  if (body.length() == 0) {
+    server.send(400, "application/json", "{\"error\":\"Empty recipe.\"}");
+    return;
+  }
+  // Leave headroom for SPIFFS' own per-file bookkeeping, not just
+  // whatever is left over after every other byte is spoken for.
+  size_t freeBytes = SPIFFS.totalBytes() - SPIFFS.usedBytes();
+  if (body.length() + 4096 > freeBytes) {
+    server.send(507, "application/json", "{\"error\":\"Not enough storage space.\"}");
+    return;
+  }
+  File f = SPIFFS.open("/" + filename, FILE_WRITE);
+  if (!f) {
+    server.send(500, "application/json", "{\"error\":\"Could not open file for writing.\"}");
+    return;
+  }
+  f.print(body);
+  f.close();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleListRecipes() {
+  String json = "[";
+  File root = SPIFFS.open("/");
+  File file = root.openNextFile();
+  bool first = true;
+  while (file) {
+    // openNextFile() names come back with or without a leading "/"
+    // depending on core version - normalize to bare, since that's what
+    // the client sends straight back to /load_recipe and /save_recipe.
+    String name = String(file.name());
+    if (name.startsWith("/")) name = name.substring(1);
+    if (name.endsWith(".json")) {
+      if (!first) json += ",";
+      json += "\"" + name + "\"";
+      first = false;
+    }
+    file = root.openNextFile();
+  }
+  json += "]";
+  server.send(200, "application/json", json);
+}
+
+void handleLoadRecipe() {
+  String filename = server.arg("filename");
+  if (!isValidRecipeFilename(filename)) {
+    server.send(400, "application/json", "{\"error\":\"Invalid filename.\"}");
+    return;
+  }
+  File f = SPIFFS.open("/" + filename, FILE_READ);
+  if (!f) {
+    server.send(404, "application/json", "{\"error\":\"Recipe not found.\"}");
+    return;
+  }
+  server.streamFile(f, "application/json");
+  f.close();
+}
+
 void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED: {
@@ -5347,9 +5587,24 @@ void setup() {
   Serial.print("[boot] http://");
   Serial.println(WiFi.softAPIP());
 
+  // true = format on first use / if mount fails, so a fresh or corrupted
+  // partition doesn't leave saved-recipe routes silently broken forever.
+  if (SPIFFS.begin(true)) {
+    Serial.print("[boot] SPIFFS mounted, ");
+    Serial.print(SPIFFS.usedBytes());
+    Serial.print("/");
+    Serial.print(SPIFFS.totalBytes());
+    Serial.println(" bytes used");
+  } else {
+    Serial.println("[boot] SPIFFS mount FAILED - save/load recipe will not work");
+  }
+
   server.on("/", handleRoot);
   server.on("/ys-logo-full.png", handleLogoFull);
   server.on("/ys-logo-topbar.png", handleLogoTopbar);
+  server.on("/save_recipe", HTTP_POST, handleSaveRecipe);
+  server.on("/list_recipes", HTTP_GET, handleListRecipes);
+  server.on("/load_recipe", HTTP_GET, handleLoadRecipe);
   server.begin();
 
   webSocket.begin();
@@ -5381,37 +5636,7 @@ void setup() {
   runBootCheck();
 }
 
-// TEMP diagnostic: logs every individual loop() gap over 300ms as it
-// happens (with its own timestamp), plus the overall max after a full 90s
-// - answers "is the big gap a one-time boot event, or does it recur
-// throughout the run" (LCD init vs. something ongoing). Remove once
-// answered.
-unsigned long lastLoopStartUs = 0;
-unsigned long maxLoopDurationUs = 0;
-bool loopDiag90sPrinted = false;
-#define LOOP_GAP_WARN_US 300000UL
-
 void loop() {
-  unsigned long nowUs = micros();
-  if (lastLoopStartUs != 0) {
-    unsigned long deltaUs = nowUs - lastLoopStartUs;
-    if (deltaUs > maxLoopDurationUs) maxLoopDurationUs = deltaUs;
-    if (deltaUs > LOOP_GAP_WARN_US) {
-      Serial.print("[LOOP-DIAG] gap at up=");
-      Serial.print(millis() / 1000);
-      Serial.print("s: ");
-      Serial.print(deltaUs);
-      Serial.println(" us");
-    }
-  }
-  lastLoopStartUs = nowUs;
-  if (!loopDiag90sPrinted && millis() > 90000) {
-    loopDiag90sPrinted = true;
-    Serial.print("[LOOP-DIAG] max loop() gap over full 90s = ");
-    Serial.print(maxLoopDurationUs);
-    Serial.println(" us");
-  }
-
   esp_task_wdt_reset();
   server.handleClient();
   webSocket.loop();
