@@ -259,6 +259,13 @@
   .mbtn-arr { font-size:16px; color:var(--text-dimmer); transition:all 0.15s ease; }
   .mbtn:hover .mbtn-arr { color:var(--brand-orange); transform:translateX(3px); }
 
+  /* Shown-disabled, not omitted - Brewfather import is on the map but not
+     built yet. No hover/active feedback, no arrow, so it doesn't invite a
+     tap that does nothing. */
+  .mbtn.disabled { cursor:default; opacity:0.5; }
+  .mbtn.disabled:hover, .mbtn.disabled:active { border-color:var(--border-dim); background:var(--panel-bg); transform:none; }
+  .mbtn.disabled .mbtn-arr { display:none; }
+
   .menu-ver {
     position:absolute; bottom:18px;
     font-family:'Share Tech Mono',monospace;
@@ -271,12 +278,12 @@
      on", not green - same reservation as the fail screen's orange: real
      safety status (if this project ever adds it) gets red/green, nothing
      else does. */
-  #manual {
+  #manual, #clean {
     display:none; position:fixed; inset:0;
     background:var(--bg-primary);
     flex-direction:column; align-items:center;
   }
-  #manual.visible { display:flex; animation:menuIn 0.4s ease; }
+  #manual.visible, #clean.visible { display:flex; animation:menuIn 0.4s ease; }
 
   .manual-topbar-left { display:flex; align-items:center; gap:10px; }
   .back-btn {
@@ -343,6 +350,115 @@
   }
   .timer-btn:hover { border-color:var(--brand-orange); }
   .timer-btn:active { transform:scale(0.96); }
+
+  /* ══ HEAT CONTROL (Manual + CLEAN share this - see
+     menu-manual-clean-spec.md) ══
+     Simple on/off bang-bang only, no PID yet. brand-teal for "SSR is on
+     right now", matching the same on-state color already used for pumps -
+     not red/green, same reservation as everywhere else in this file. */
+  .heat-control {
+    display:flex; flex-direction:column; gap:12px;
+    background:var(--panel-bg); border:1px solid var(--border-dim);
+    border-radius:4px; padding:16px;
+  }
+  .setpoint-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .setpoint-label {
+    font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600;
+    color:#ccc; text-transform:uppercase; letter-spacing:1px;
+  }
+  .setpoint-input {
+    width:90px; font-family:'Share Tech Mono',monospace; font-size:16px;
+    background:#161a26; border:1px solid var(--border-dim); border-radius:4px;
+    color:var(--text-primary); padding:8px 10px; text-align:center;
+  }
+  .setpoint-input:focus { outline:none; border-color:var(--brand-orange); }
+  .control-btn {
+    font-family:'Rajdhani',sans-serif; font-weight:600; font-size:14px;
+    letter-spacing:2px; text-transform:uppercase; color:var(--text-primary);
+    background:#161a26; border:1px solid var(--border-dim); border-radius:4px;
+    padding:12px; cursor:pointer; transition:all 0.15s ease;
+    -webkit-tap-highlight-color:transparent; user-select:none;
+  }
+  .control-btn.active { border-color:var(--brand-teal); background:#132424; color:var(--brand-teal); }
+  .control-btn:active { transform:scale(0.97); }
+  .control-status {
+    font-family:'Share Tech Mono',monospace; font-size:11px;
+    letter-spacing:1px; color:var(--text-dim); text-align:center;
+  }
+  .control-status.on { color:var(--brand-teal); }
+
+  /* ══ IMPORT RECIPE (step 1: parse + preview only, no save yet -
+     see import-file-step1-spec.md) ══ */
+  #import-recipe {
+    display:none; position:fixed; inset:0;
+    background:var(--bg-primary);
+    flex-direction:column; align-items:center;
+  }
+  #import-recipe.visible { display:flex; animation:menuIn 0.4s ease; }
+
+  .import-body {
+    width:min(400px,88vw); margin-top:64px; padding-bottom:40px;
+    display:flex; flex-direction:column; gap:20px;
+    max-height:calc(100vh - 100px); overflow-y:auto;
+  }
+
+  .import-picker {
+    display:flex; flex-direction:column; align-items:center; gap:14px;
+    padding:30px 0;
+  }
+  .import-picker.hidden { display:none; }
+  .import-status {
+    font-family:'Share Tech Mono',monospace; font-size:11px;
+    letter-spacing:1px; color:var(--text-dim); text-align:center;
+    min-height:16px;
+  }
+  .import-status.error { color:var(--brand-orange); }
+
+  .import-result { display:none; flex-direction:column; gap:20px; }
+  .import-result.visible { display:flex; }
+
+  .recipe-title {
+    font-family:'Rajdhani',sans-serif; font-size:20px; font-weight:600;
+    color:var(--text-primary); text-align:center;
+  }
+  .recipe-style {
+    font-family:'Share Tech Mono',monospace; font-size:11px;
+    letter-spacing:1px; color:var(--text-dim); text-align:center;
+  }
+
+  .recipe-stats { display:flex; gap:10px; }
+  .stat-card {
+    flex:1; background:var(--panel-bg); border:1px solid var(--border-dim);
+    border-radius:4px; padding:12px; text-align:center;
+  }
+  .stat-card-label {
+    font-family:'Share Tech Mono',monospace; font-size:9px;
+    letter-spacing:2px; color:var(--text-dimmer); margin-bottom:4px;
+  }
+  .stat-card-value {
+    font-family:'Rajdhani',sans-serif; font-size:18px; font-weight:600;
+    color:var(--text-primary);
+  }
+
+  .recipe-section { display:flex; flex-direction:column; gap:8px; }
+  .recipe-section-label {
+    font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
+    letter-spacing:2px; color:var(--text-dimmer); text-transform:uppercase;
+  }
+  .recipe-list { display:flex; flex-direction:column; gap:6px; }
+  .recipe-row {
+    display:flex; justify-content:space-between; align-items:center;
+    background:var(--panel-bg); border:1px solid var(--border-dim);
+    border-radius:4px; padding:10px 14px;
+  }
+  .recipe-row-name {
+    font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:500;
+    color:#ccc;
+  }
+  .recipe-row-detail {
+    font-family:'Share Tech Mono',monospace; font-size:11px;
+    color:var(--text-dim);
+  }
 </style>
 </head>
 <body>
@@ -393,6 +509,14 @@
   </div>
 
   <div class="menu-list">
+    <div class="mbtn" onclick="enterImportRecipe()">
+      <div class="mbtn-icon">⬇</div>
+      <div class="mbtn-body">
+        <div class="mbtn-title">Import Recipe</div>
+        <div class="mbtn-sub">Import a recipe from a BeerXML file</div>
+      </div>
+      <div class="mbtn-arr">›</div>
+    </div>
     <div class="mbtn">
       <div class="mbtn-icon">📋</div>
       <div class="mbtn-body">
@@ -401,19 +525,27 @@
       </div>
       <div class="mbtn-arr">›</div>
     </div>
-    <div class="mbtn">
-      <div class="mbtn-icon">⬇</div>
+    <div class="mbtn disabled">
+      <div class="mbtn-icon">🔗</div>
       <div class="mbtn-body">
-        <div class="mbtn-title">Import Recipe</div>
-        <div class="mbtn-sub">Import from Brewfather (JSON)</div>
+        <div class="mbtn-title">Brewfather</div>
+        <div class="mbtn-sub">Coming soon</div>
       </div>
       <div class="mbtn-arr">›</div>
     </div>
     <div class="mbtn" onclick="enterManual()">
       <div class="mbtn-icon">⚙</div>
       <div class="mbtn-body">
-        <div class="mbtn-title">Manual Mode</div>
+        <div class="mbtn-title">Manual</div>
         <div class="mbtn-sub">Direct control of all systems</div>
+      </div>
+      <div class="mbtn-arr">›</div>
+    </div>
+    <div class="mbtn" onclick="enterClean()">
+      <div class="mbtn-icon">🧽</div>
+      <div class="mbtn-body">
+        <div class="mbtn-title">CLEAN</div>
+        <div class="mbtn-sub">Simple on/off heat to a target temperature</div>
       </div>
       <div class="mbtn-arr">›</div>
     </div>
@@ -438,7 +570,7 @@
   <div class="manual-body">
     <div class="menu-heading">
       <div class="h-line"></div>
-      <div class="h-text">Manual Mode</div>
+      <div class="h-text">Manual</div>
       <div class="h-line r"></div>
     </div>
 
@@ -451,6 +583,15 @@
         <div class="temp-card-label">PT2</div>
         <div class="temp-card-value" id="manual-pt2">--</div>
       </div>
+    </div>
+
+    <div class="heat-control">
+      <div class="setpoint-row">
+        <div class="setpoint-label">Setpoint °C</div>
+        <input type="number" class="setpoint-input" id="manual-setpoint-input" step="0.5" placeholder="--">
+      </div>
+      <button class="control-btn" id="manual-control-btn" onclick="toggleControl('manual')">START</button>
+      <div class="control-status" id="manual-control-status">SSR: OFF</div>
     </div>
 
     <div class="pump-row">
@@ -470,6 +611,131 @@
         <button class="timer-btn" onclick="timerStart()">Start</button>
         <button class="timer-btn" onclick="timerStop()">Stop</button>
         <button class="timer-btn" onclick="timerReset()">Reset</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ CLEAN ══ (see menu-manual-clean-spec.md) -->
+<div id="clean">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitClean()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="manual-body">
+    <div class="menu-heading">
+      <div class="h-line"></div>
+      <div class="h-text">CLEAN</div>
+      <div class="h-line r"></div>
+    </div>
+
+    <div class="manual-temps">
+      <div class="temp-card">
+        <div class="temp-card-label">PT1</div>
+        <div class="temp-card-value" id="clean-pt1">--</div>
+      </div>
+      <div class="temp-card">
+        <div class="temp-card-label">PT2</div>
+        <div class="temp-card-value" id="clean-pt2">--</div>
+      </div>
+    </div>
+
+    <div class="heat-control">
+      <div class="setpoint-row">
+        <div class="setpoint-label">Setpoint °C</div>
+        <input type="number" class="setpoint-input" id="clean-setpoint-input" step="0.5" placeholder="--">
+      </div>
+      <button class="control-btn" id="clean-control-btn" onclick="toggleControl('clean')">START</button>
+      <div class="control-status" id="clean-control-status">SSR: OFF</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ IMPORT RECIPE ══ -->
+<div id="import-recipe">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitImportRecipe()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="import-body">
+    <div class="menu-heading">
+      <div class="h-line"></div>
+      <div class="h-text">Import Recipe</div>
+      <div class="h-line r"></div>
+    </div>
+
+    <div class="import-picker" id="import-picker">
+      <input type="file" id="import-file-input" accept=".xml" style="display:none" onchange="handleImportFileSelected(event)">
+      <button class="timer-btn" onclick="document.getElementById('import-file-input').click()">Choose BeerXML File</button>
+      <div class="import-status" id="import-status"></div>
+    </div>
+
+    <div class="import-result" id="import-result">
+      <div class="recipe-title" id="recipe-name">--</div>
+      <div class="recipe-style" id="recipe-style"></div>
+
+      <div class="recipe-stats">
+        <div class="stat-card">
+          <div class="stat-card-label">OG</div>
+          <div class="stat-card-value" id="recipe-og">--</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">IBU</div>
+          <div class="stat-card-value" id="recipe-ibu">--</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">ABV</div>
+          <div class="stat-card-value" id="recipe-abv">--</div>
+        </div>
+      </div>
+
+      <div class="recipe-section" id="section-fermentables">
+        <div class="recipe-section-label">Grain Bill</div>
+        <div class="recipe-list" id="recipe-fermentables-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-mash">
+        <div class="recipe-section-label">Mash Steps</div>
+        <div class="recipe-list" id="recipe-mash-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-hops">
+        <div class="recipe-section-label">Hops</div>
+        <div class="recipe-list" id="recipe-hops-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-yeast">
+        <div class="recipe-section-label">Yeast</div>
+        <div class="recipe-list" id="recipe-yeast-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-water">
+        <div class="recipe-section-label">Water / Minerals</div>
+        <div class="recipe-list" id="recipe-water-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-misc">
+        <div class="recipe-section-label">Other Additions</div>
+        <div class="recipe-list" id="recipe-misc-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-all-fields">
+        <div class="recipe-section-label">All Other Fields</div>
+        <div class="recipe-list" id="recipe-all-fields-list"></div>
       </div>
     </div>
   </div>
@@ -495,9 +761,46 @@ const pump2Btn = document.getElementById('pump2-btn');
 const pump1State = document.getElementById('pump1-state');
 const pump2State = document.getElementById('pump2-state');
 const timerDisplay = document.getElementById('timer-display');
+const manualSetpointInput = document.getElementById('manual-setpoint-input');
+const manualControlBtn = document.getElementById('manual-control-btn');
+const manualControlStatus = document.getElementById('manual-control-status');
+const cleanEl = document.getElementById('clean');
+const cleanPt1El = document.getElementById('clean-pt1');
+const cleanPt2El = document.getElementById('clean-pt2');
+const cleanSetpointInput = document.getElementById('clean-setpoint-input');
+const cleanControlBtn = document.getElementById('clean-control-btn');
+const cleanControlStatus = document.getElementById('clean-control-status');
+const importRecipeEl = document.getElementById('import-recipe');
+const importPickerEl = document.getElementById('import-picker');
+const importStatusEl = document.getElementById('import-status');
+const importResultEl = document.getElementById('import-result');
+const recipeNameEl = document.getElementById('recipe-name');
+const recipeStyleEl = document.getElementById('recipe-style');
+const recipeOgEl = document.getElementById('recipe-og');
+const recipeIbuEl = document.getElementById('recipe-ibu');
+const recipeAbvEl = document.getElementById('recipe-abv');
+const sectionFermentablesEl = document.getElementById('section-fermentables');
+const recipeFermentablesListEl = document.getElementById('recipe-fermentables-list');
+const sectionMashEl = document.getElementById('section-mash');
+const recipeMashListEl = document.getElementById('recipe-mash-list');
+const sectionHopsEl = document.getElementById('section-hops');
+const recipeHopsListEl = document.getElementById('recipe-hops-list');
+const sectionYeastEl = document.getElementById('section-yeast');
+const recipeYeastListEl = document.getElementById('recipe-yeast-list');
+const sectionWaterEl = document.getElementById('section-water');
+const recipeWaterListEl = document.getElementById('recipe-water-list');
+const sectionMiscEl = document.getElementById('section-misc');
+const recipeMiscListEl = document.getElementById('recipe-misc-list');
+const sectionAllFieldsEl = document.getElementById('section-all-fields');
+const recipeAllFieldsListEl = document.getElementById('recipe-all-fields-list');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
+
+// Computed once, up front, so both connect() and the local-testing
+// shortcut below can check it - see connect()'s comment for why this
+// matters, not just for convenience.
+const debugImportMode = new URLSearchParams(window.location.search).has('import');
 
 let ws;
 let reconnectTimer = null;
@@ -552,6 +855,16 @@ function handleBootCheck(msg) {
 
 function connect() {
   const host = window.location.hostname;
+  // window.location.hostname is '' when this page is opened via file://
+  // (not served by the ESP32) - new WebSocket('ws://:81/') for an empty
+  // host throws a synchronous SyntaxError, which would abort the rest of
+  // this script (including the ?import shortcut below, which runs after
+  // this call) before it ever got a chance to run. Real hardware always
+  // has a non-empty hostname (192.168.4.1), so this only ever skips the
+  // connection attempt for file:// or the explicit debug shortcut - it
+  // never changes behavior when actually served by the ESP32.
+  if (!host || debugImportMode) return;
+
   ws = new WebSocket('ws://' + host + ':81/');
 
   ws.onclose = () => {
@@ -592,13 +905,55 @@ function retrySensorCheck() {
 // regardless of which screen is showing (same always-broadcast model as
 // the rest of this page) - handleManual() just updates the DOM, harmless
 // even while this screen isn't visible.
+// Manual and CLEAN are two views onto the exact same server-side state
+// (see menu-manual-clean-spec.md - "the only real difference right now is
+// which screen, not the behavior"), so a single "manual" broadcast
+// updates both screens' temps and heat-control UI every time, regardless
+// of which one is currently visible - same pattern as everything else on
+// this page.
+let heatControlActive = false;
+
 function handleManual(m) {
-  pt1El.textContent = (m.pt1 === null || m.pt1 === undefined) ? 'ERR' : m.pt1.toFixed(1) + '°C';
-  pt2El.textContent = (m.pt2 === null || m.pt2 === undefined) ? 'ERR' : m.pt2.toFixed(1) + '°C';
+  const tempText = (v) => (v === null || v === undefined) ? 'ERR' : v.toFixed(1) + '°C';
+  pt1El.textContent = tempText(m.pt1);
+  pt2El.textContent = tempText(m.pt2);
+  cleanPt1El.textContent = tempText(m.pt1);
+  cleanPt2El.textContent = tempText(m.pt2);
+
   pump1Btn.classList.toggle('on', !!m.relay1);
   pump1State.textContent = m.relay1 ? 'ON' : 'OFF';
   pump2Btn.classList.toggle('on', !!m.relay2);
   pump2State.textContent = m.relay2 ? 'ON' : 'OFF';
+
+  heatControlActive = !!m.control_active;
+  updateControlUI(manualSetpointInput, manualControlBtn, manualControlStatus, m);
+  updateControlUI(cleanSetpointInput, cleanControlBtn, cleanControlStatus, m);
+}
+
+function updateControlUI(inputEl, btnEl, statusEl, m) {
+  const active = !!m.control_active;
+  btnEl.textContent = active ? 'STOP' : 'START';
+  btnEl.classList.toggle('active', active);
+  statusEl.textContent = 'SSR: ' + (m.ssr1 ? 'ON' : 'OFF');
+  statusEl.classList.toggle('on', !!m.ssr1);
+  // Only sync the input's shown value once control is confirmed active
+  // and the user isn't mid-edit - never clobber what someone is typing
+  // before they've pressed START.
+  if (active && m.setpoint !== null && document.activeElement !== inputEl) {
+    inputEl.value = m.setpoint;
+  }
+}
+
+function toggleControl(prefix) {
+  if (!(ws && ws.readyState === WebSocket.OPEN)) return;
+  if (heatControlActive) {
+    ws.send('stop_control');
+    return;
+  }
+  const input = document.getElementById(prefix + '-setpoint-input');
+  const value = parseFloat(input.value);
+  if (isNaN(value)) return;
+  ws.send('start_control:' + value.toFixed(1));
 }
 
 function togglePump(n) {
@@ -614,6 +969,16 @@ function enterManual() {
 
 function exitManual() {
   manualEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+}
+
+function enterClean() {
+  menuEl.classList.remove('visible');
+  cleanEl.classList.add('visible');
+}
+
+function exitClean() {
+  cleanEl.classList.remove('visible');
   menuEl.classList.add('visible');
 }
 
@@ -648,7 +1013,314 @@ function timerReset() {
   timerDisplay.textContent = formatTimer(timerSeconds);
 }
 
-connect();
+// ══ IMPORT RECIPE ══ (see import-file-js-parse-spec.md)
+// Parsing happens entirely here in the browser via DOMParser - the ESP32
+// is not contacted at all for this step (no fetch, no upload). When a
+// future "Save" step is built, only a clean JSON object gets sent to the
+// ESP32, never the raw XML - this parser is the only thing that ever
+// reads BeerXML directly. Step 1 (this one): parse + preview, no Save
+// button yet (deliberately not shown at all, not shown-but-disabled).
+function enterImportRecipe() {
+  menuEl.classList.remove('visible');
+  importRecipeEl.classList.add('visible');
+}
+
+function exitImportRecipe() {
+  importRecipeEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+  // Reset to the picker so re-entering later starts fresh, not on
+  // whatever preview or error was last left on screen.
+  importResultEl.classList.remove('visible');
+  importPickerEl.classList.remove('hidden');
+  importStatusEl.textContent = '';
+  importStatusEl.classList.remove('error');
+  document.getElementById('import-file-input').value = '';
+}
+
+function renderRecipeList(container, items, formatDetail) {
+  container.innerHTML = '';
+  (items || []).forEach((item) => {
+    const row = document.createElement('div');
+    row.className = 'recipe-row';
+    const name = document.createElement('div');
+    name.className = 'recipe-row-name';
+    name.textContent = item.name || '(unnamed)';
+    const detail = document.createElement('div');
+    detail.className = 'recipe-row-detail';
+    detail.textContent = formatDetail(item);
+    row.appendChild(name);
+    row.appendChild(detail);
+    container.appendChild(row);
+  });
+}
+
+// A section (Grain Bill, Water/Minerals, etc.) whose list is genuinely
+// absent from the file is hidden entirely, rather than showing an empty
+// labeled box with nothing under it.
+function renderRecipeSection(sectionEl, listEl, items, formatDetail) {
+  const list = items || [];
+  if (list.length === 0) {
+    sectionEl.style.display = 'none';
+    return;
+  }
+  sectionEl.style.display = '';
+  renderRecipeList(listEl, list, formatDetail);
+}
+
+function showRecipePreview(recipe) {
+  recipeNameEl.textContent = recipe.name || 'Untitled Recipe';
+  recipeStyleEl.textContent = recipe.style || '';
+  recipeStyleEl.style.display = recipe.style ? '' : 'none';
+  recipeOgEl.textContent = recipe.og !== null ? recipe.og.toFixed(3) : '--';
+  recipeIbuEl.textContent = recipe.ibu !== null ? Math.round(recipe.ibu) : '--';
+  recipeAbvEl.textContent = recipe.abv !== null ? recipe.abv.toFixed(1) + '%' : '--';
+  // A missing field is null - show a placeholder for just that value,
+  // never drop the whole row over one empty field (a MASH_STEP or HOP
+  // with a missing time/temp is common in real-world exports, not a
+  // reason to hide the ingredient entirely). Everything the file has is
+  // shown here, not just a subset - grain bill, yeast, water/minerals and
+  // other additions included, same as mash/hops always were.
+  renderRecipeSection(sectionFermentablesEl, recipeFermentablesListEl, recipe.fermentables,
+    (f) => (f.amount_kg !== null ? f.amount_kg.toFixed(2) + ' kg' : '--') + ' / ' +
+           (f.color !== null ? f.color.toFixed(0) + 'L' : '--'));
+  renderRecipeSection(sectionMashEl, recipeMashListEl, recipe.mash_steps,
+    (s) => (s.temp_c !== null ? s.temp_c.toFixed(0) + '°C' : '--') + ' / ' +
+           (s.time_min !== null ? s.time_min.toFixed(0) + ' min' : '--'));
+  renderRecipeSection(sectionHopsEl, recipeHopsListEl, recipe.hops,
+    (h) => (h.amount_g !== null ? h.amount_g.toFixed(0) + 'g' : '--') + ' @ ' +
+           (h.time_min !== null ? h.time_min.toFixed(0) + ' min' : '--'));
+  renderRecipeSection(sectionYeastEl, recipeYeastListEl, recipe.yeasts,
+    (y) => y.form || '--');
+  renderRecipeSection(sectionWaterEl, recipeWaterListEl, recipe.waters,
+    (w) => w.amount !== null ? w.amount.toFixed(1) + ' L' : '--');
+  renderRecipeSection(sectionMiscEl, recipeMiscListEl, recipe.miscs,
+    (m) => (m.amount !== null ? m.amount.toFixed(2) : '--') +
+           (m.use ? ' (' + m.use + ')' : '') +
+           (m.time_min !== null ? ' @ ' + m.time_min.toFixed(0) + ' min' : ''));
+  renderRecipeSection(sectionAllFieldsEl, recipeAllFieldsListEl, recipe.all_fields,
+    (f) => f.value);
+  importPickerEl.classList.add('hidden');
+  importResultEl.classList.add('visible');
+}
+
+// ── BeerXML parsing (DOMParser) ──
+// getElementsByTagName searches the WHOLE subtree of the element it's
+// called on (not just direct children), so "find this tag anywhere in
+// the tree" is what it does by default - no custom recursive search
+// needed here, unlike the C++ version this replaces.
+function tagText(scope, tag) {
+  if (!scope) return '';
+  const el = scope.getElementsByTagName(tag)[0];
+  const text = el && el.textContent != null ? el.textContent.trim() : '';
+  return text;
+}
+
+function tagFloat(scope, tag) {
+  const text = tagText(scope, tag);
+  if (text === '') return null;
+  const v = parseFloat(text);
+  return isNaN(v) ? null : v;
+}
+
+// Some exporters (Brewfather, etc.) write EST_OG/EST_ABV instead of the
+// plain BeerXML OG/ABV tags, or leave the plain one empty alongside it.
+function tagFloatWithFallback(scope, tag, fallbackTag) {
+  const v = tagFloat(scope, tag);
+  return v !== null ? v : tagFloat(scope, fallbackTag);
+}
+
+// Tags fully covered by their own dedicated, nicely-formatted section
+// (Grain Bill, Mash Steps, Hops, Yeast, Water/Minerals, Other Additions).
+// collectAllFields() below does not re-descend into these - avoiding a
+// redundant flat dump of every hop/fermentable a second time - but it
+// recurses into literally everything else without exception, so nothing
+// outside these six specific, already-tested sections can ever be
+// silently missed just because nobody thought to add it to a list. This
+// is the fix for "only shows what someone remembered to hard-code": there
+// is no such list here except this one, naming exactly the sections that
+// already get better treatment above.
+const HANDLED_GROUP_TAGS = ['FERMENTABLES', 'HOPS', 'MASH_STEPS', 'YEASTS', 'WATERS', 'MISCS'];
+
+// Recursively walks every leaf tag under `el` (any element with no child
+// elements, just text) and records it as {name: <path>, value: <text>}.
+// Repeated sibling tags (multiple HOP/FERMENTABLE/etc. elsewhere in the
+// tree, or anything else unexpected) are disambiguated by that item's own
+// NAME when it has one, otherwise a 1-based index - so this never
+// silently collapses several entries into one.
+function collectAllFields(el, path, out) {
+  const children = Array.from(el.children).filter((c) => !HANDLED_GROUP_TAGS.includes(c.tagName));
+  const tagCounts = {};
+  children.forEach((child) => { tagCounts[child.tagName] = (tagCounts[child.tagName] || 0) + 1; });
+  const tagSeen = {};
+
+  children.forEach((child) => {
+    const tag = child.tagName;
+    let segment = tag;
+    if (tagCounts[tag] > 1) {
+      tagSeen[tag] = (tagSeen[tag] || 0) + 1;
+      const nameEl = Array.from(child.children).find((c) => c.tagName === 'NAME');
+      const itemName = nameEl && nameEl.textContent ? nameEl.textContent.trim() : '';
+      segment = tag + (itemName ? ' (' + itemName + ')' : ' #' + tagSeen[tag]);
+    }
+    const childPath = path ? path + ' / ' + segment : segment;
+    if (child.children.length === 0) {
+      const text = child.textContent != null ? child.textContent.trim() : '';
+      if (text !== '') out.push({ name: childPath, value: text });
+    } else {
+      collectAllFields(child, childPath, out);
+    }
+  });
+}
+
+function parseBeerXml(xmlText) {
+  const xmlDoc = new DOMParser().parseFromString(xmlText, 'application/xml');
+
+  // DOMParser never throws on malformed XML - it silently returns a
+  // document containing a <parsererror> element instead. Checking for
+  // that explicitly is the only way to catch a bad file; skipping this
+  // check would let garbage through as if it parsed fine.
+  if (xmlDoc.getElementsByTagName('parsererror').length > 0) {
+    return { error: 'Could not parse this file.' };
+  }
+
+  // Accept <RECIPES><RECIPE>...</RECIPE></RECIPES> (the standard
+  // wrapper), a bare <RECIPE> root, or RECIPE nested somewhere else
+  // entirely - getElementsByTagName on the document finds it regardless
+  // of depth, and documentElement covers the bare-root case.
+  const root = xmlDoc.documentElement;
+  const recipeEl = (root && root.tagName === 'RECIPE') ? root : xmlDoc.getElementsByTagName('RECIPE')[0];
+  if (!recipeEl) {
+    return { error: 'Could not parse this file.' };
+  }
+
+  const fermentables = Array.from(recipeEl.getElementsByTagName('FERMENTABLE')).map((fEl) => ({
+    name: tagText(fEl, 'NAME'),
+    amount_kg: tagFloat(fEl, 'AMOUNT'),
+    color: tagFloat(fEl, 'COLOR'),
+  }));
+
+  const mashSteps = Array.from(recipeEl.getElementsByTagName('MASH_STEP')).map((stepEl) => ({
+    name: tagText(stepEl, 'NAME'),
+    temp_c: tagFloat(stepEl, 'STEP_TEMP'),
+    time_min: tagFloat(stepEl, 'STEP_TIME'),
+  }));
+
+  const hops = Array.from(recipeEl.getElementsByTagName('HOP')).map((hopEl) => {
+    const amountKg = tagFloat(hopEl, 'AMOUNT');
+    return {
+      name: tagText(hopEl, 'NAME'),
+      amount_g: amountKg !== null ? amountKg * 1000 : null,
+      time_min: tagFloat(hopEl, 'TIME'),
+    };
+  });
+
+  const miscs = Array.from(recipeEl.getElementsByTagName('MISC')).map((miscEl) => ({
+    name: tagText(miscEl, 'NAME'),
+    amount: tagFloat(miscEl, 'AMOUNT'),
+    use: tagText(miscEl, 'USE'),
+    time_min: tagFloat(miscEl, 'TIME'),
+  }));
+
+  const waters = Array.from(recipeEl.getElementsByTagName('WATER')).map((waterEl) => ({
+    name: tagText(waterEl, 'NAME'),
+    amount: tagFloat(waterEl, 'AMOUNT'),
+  }));
+
+  const yeasts = Array.from(recipeEl.getElementsByTagName('YEAST')).map((yEl) => ({
+    name: tagText(yEl, 'NAME'),
+    form: tagText(yEl, 'FORM'),
+  }));
+
+  // <STYLE> is a single nested element, not a list - its own <NAME> has to
+  // be scoped to the STYLE element specifically, or tagText(recipeEl,
+  // 'NAME') would just find the recipe's own name again first.
+  const styleEl = recipeEl.getElementsByTagName('STYLE')[0];
+  const styleName = styleEl ? tagText(styleEl, 'NAME') : '';
+
+  // Everything else in the file, whatever it turns out to be - see
+  // collectAllFields()'s own comment for why this is a full recursive
+  // walk rather than another hand-picked list of fields.
+  const allFields = [];
+  collectAllFields(recipeEl, '', allFields);
+
+  return {
+    name: tagText(recipeEl, 'NAME'),
+    style: styleName,
+    og: tagFloatWithFallback(recipeEl, 'OG', 'EST_OG'),
+    ibu: tagFloat(recipeEl, 'IBU'),
+    abv: tagFloatWithFallback(recipeEl, 'ABV', 'EST_ABV'),
+    fermentables: fermentables,
+    mash_steps: mashSteps,
+    hops: hops,
+    yeasts: yeasts,
+    waters: waters,
+    miscs: miscs,
+    all_fields: allFields,
+  };
+}
+
+function handleImportFileSelected(evt) {
+  const file = evt.target.files[0];
+  if (!file) return;
+
+  importStatusEl.classList.remove('error');
+  importStatusEl.textContent = 'Parsing...';
+
+  file.text()
+    .then((text) => {
+      const recipe = parseBeerXml(text);
+      if (recipe.error) {
+        importStatusEl.classList.add('error');
+        importStatusEl.textContent = recipe.error;
+        return;
+      }
+      importStatusEl.textContent = '';
+      showRecipePreview(recipe);
+    })
+    .catch(() => {
+      importStatusEl.classList.add('error');
+      importStatusEl.textContent = 'Could not read this file.';
+    });
+}
+
+// Deferred to window 'load' (not called inline here) so the very first
+// connection attempt starts only after the two logo images have finished
+// downloading - starting it immediately raced the WS handshake against
+// the ESP32 still serving those images, which was slow enough on real
+// hardware to make the handshake itself take several seconds, in turn
+// starving it out via the heartbeat's ping/pong timeout below (confirmed
+// via the WebSockets library's own internal debug log). Later reconnects
+// (the setTimeout in ws.onclose) are unaffected - by then the page and
+// its images are already loaded.
+window.addEventListener('load', () => connect());
+
+// Close the socket cleanly when this tab is closed/navigated away from -
+// otherwise it lingers as a "ghost" connection the ESP32 only notices via
+// the heartbeat timeout (several seconds later), during which it still
+// counts as a connected client and can overlap with a genuinely new
+// connection from a freshly opened tab. Just closing our own socket on
+// the way out is enough for the real case (a user closing a tab); no
+// server-side single-connection enforcement needed for that.
+function closeSocketOnExit() {
+  if (ws) ws.close();
+}
+window.addEventListener('beforeunload', closeSocketOnExit);
+window.addEventListener('pagehide', closeSocketOnExit);
+
+// ── Local testing shortcut (no ESP32 needed) ──
+// Opening this file directly (file://) has no WebSocket that will ever
+// answer, so the boot screen would otherwise wait forever for a
+// boot_check message that never comes. ?import in the URL skips straight
+// to the Import Recipe screen for local testing only. connect() already
+// skipped its connection attempt entirely for this same debugImportMode
+// flag (see its comment) - this just controls what's shown instead, never
+// the real boot_check-driven flow, so real hardware behavior is
+// unaffected whether or not this parameter is present.
+if (debugImportMode) {
+  bootEl.style.display = 'none';
+  menuEl.classList.remove('visible');
+  enterImportRecipe();
+}
 </script>
 </body>
 </html>
