@@ -108,8 +108,13 @@
      אי אפשר יותר לשלוט בצבע דרך fill בקוד - הצבע כבר "אפוי" בתוך
      הקובץ. לכן אין כאן עוד תלות ב-fill/currentColor. */
   .logo-svg {
-    width: 320px;
-    height: 320px;
+    /* Was a fixed 320x320px - fit one phone width by coincidence, not by
+       design. min() scales it down on a narrow screen and caps it on a
+       wide one (e.g. a future 9" car display) instead of a size tuned to
+       a single resolution. height:auto preserves the image's own aspect
+       ratio rather than forcing a square box. */
+    width: min(240px, 55vw);
+    height: auto;
     display:block;
     object-fit: contain;
     filter: drop-shadow(0 0 20px rgba(245,148,31,0.12));
@@ -130,7 +135,7 @@
     font-size:11px; letter-spacing:3px; color:var(--text-dim);
     text-transform:uppercase; min-height:16px;
   }
-  .bar-track { width:200px; height:1px; background:var(--border-dim); overflow:hidden; }
+  .bar-track { width:min(160px, 45vw); height:1px; background:var(--border-dim); overflow:hidden; }
   .bar-fill {
     height:100%; width:0%; background:var(--brand-orange);
     box-shadow:0 0 8px rgba(245,148,31,0.5);
@@ -201,7 +206,20 @@
   #menu {
     display:none; position:fixed; inset:0;
     background:var(--bg-primary);
-    flex-direction:column; align-items:center; justify-content:center;
+    flex-direction:column; align-items:center;
+    /* .menu-ver used to be position:absolute + justify-content:center was
+       used for the heading+list group - fine on a normal phone height,
+       but on an unusually tall/narrow screen a short, centered group just
+       floats in the visual middle with a large, disconnected-looking gap
+       below it. Anchoring the heading+list near the top (where a menu is
+       expected to start) and pinning only the footer to the bottom via a
+       standard flex "sticky footer" auto-margin (see .menu-ver below)
+       reads as intentional on any aspect ratio, short or very tall, not
+       just the one this was originally tuned against. Padding replaces
+       the topbar's absolute height (62px) and the footer's old fixed
+       bottom offset (18px) as breathing room. */
+    justify-content: flex-start;
+    padding: 62px 0 18px;
   }
   #menu.visible { display:flex; animation:menuIn 0.6s ease; }
   @keyframes menuIn { from{opacity:0} to{opacity:1} }
@@ -267,7 +285,12 @@
   .mbtn.disabled .mbtn-arr { display:none; }
 
   .menu-ver {
-    position:absolute; bottom:18px;
+    /* Sticky-footer pattern: an auto top margin on a flex child claims
+       all remaining space above it, pushing it to the bottom of #menu
+       regardless of viewport height - short screen or very tall one -
+       without needing justify-content to distribute space for the whole
+       column (see #menu's comment). */
+    margin-top: auto;
     font-family:'Share Tech Mono',monospace;
     font-size:10px; letter-spacing:2px; color:var(--border-dim);
   }
