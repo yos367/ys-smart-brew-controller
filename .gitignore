@@ -10,3 +10,7 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Real home WiFi credentials for the AP+STA stability test (see
+# ap-sta-stability-test-spec.md) - must never enter git in any form.
+src/tests/wifi_credentials.h
