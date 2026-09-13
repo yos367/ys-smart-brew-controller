@@ -936,12 +936,12 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
 
   /* ══ IMPORT RECIPE (step 1: parse + preview only, no save yet -
      see import-file-step1-spec.md) ══ */
-  #import-recipe, #load-recipe {
+  #import-recipe, #load-recipe, #wifi-setup {
     display:none; position:fixed; inset:0;
     background:var(--bg-primary);
     flex-direction:column; align-items:center;
   }
-  #import-recipe.visible, #load-recipe.visible { display:flex; animation:menuIn 0.4s ease; }
+  #import-recipe.visible, #load-recipe.visible, #wifi-setup.visible { display:flex; animation:menuIn 0.4s ease; }
 
   .import-body {
     width:min(400px,88vw); margin-top:64px; padding-bottom:40px;
@@ -1013,6 +1013,15 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     display:flex; flex-direction:column; align-items:center; gap:8px;
     padding-top:6px;
   }
+
+  .wifi-row-delete {
+    background:none; border:1px solid var(--border-dim); border-radius:4px;
+    color:var(--brand-orange); font-size:13px; font-weight:600;
+    padding:4px 10px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    font-family:'Rajdhani',sans-serif;
+  }
+  .wifi-row-delete:active { transform:scale(0.95); }
+  .wifi-connected { color:var(--brand-teal); }
 </style>
 </head>
 <body>
@@ -1100,6 +1109,14 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       <div class="mbtn-body">
         <div class="mbtn-title">CLEAN</div>
         <div class="mbtn-sub">Simple on/off heat to a target temperature</div>
+      </div>
+      <div class="mbtn-arr">›</div>
+    </div>
+    <div class="mbtn" onclick="enterWifiSetup()">
+      <div class="mbtn-icon">📶</div>
+      <div class="mbtn-body">
+        <div class="mbtn-title">WiFi Setup</div>
+        <div class="mbtn-sub">Manage saved networks</div>
       </div>
       <div class="mbtn-arr">›</div>
     </div>
@@ -1325,6 +1342,57 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   </div>
 </div>
 
+<!-- ══ WIFI SETUP ══ (see wifi-setup-screen-spec.md) -->
+<div id="wifi-setup">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitWifiSetup()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="import-body">
+    <div class="menu-heading">
+      <div class="h-line"></div>
+      <div class="h-text">WiFi Setup</div>
+      <div class="h-line r"></div>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Current Connection</div>
+      <div class="import-status" id="wifi-current-status">--</div>
+      <button class="timer-btn" id="wifi-stop-btn" onclick="stopWifiConnection()" style="display:none">Cancel / Stop</button>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Saved Networks</div>
+      <div class="import-status" id="wifi-networks-empty" style="display:none">No saved networks yet</div>
+      <div class="recipe-list" id="wifi-networks-list"></div>
+    </div>
+
+    <div class="import-save-row">
+      <button class="timer-btn" onclick="toggleAddNetworkForm()">Add Network</button>
+    </div>
+
+    <div class="heat-control" id="wifi-add-form" style="display:none">
+      <div class="setpoint-row">
+        <div class="setpoint-label">SSID</div>
+        <input type="text" class="setpoint-input" id="wifi-ssid-input" style="width:170px" maxlength="32">
+      </div>
+      <div class="setpoint-row">
+        <div class="setpoint-label">Password</div>
+        <input type="password" class="setpoint-input" id="wifi-password-input" style="width:170px" maxlength="63">
+      </div>
+      <button class="control-btn" onclick="saveNewNetwork()">Save Network</button>
+      <div class="import-status" id="wifi-add-status"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 // Boot-sensor-check protocol over the same WebSocket (port 81) used
 // elsewhere in this project - see boot-sensor-check-spec.md. Real status
@@ -1383,6 +1451,15 @@ const importSaveRowEl = document.getElementById('import-save-row');
 const loadRecipeEl = document.getElementById('load-recipe');
 const loadRecipeListEl = document.getElementById('load-recipe-list');
 const loadRecipeEmptyEl = document.getElementById('load-recipe-empty');
+const wifiSetupEl = document.getElementById('wifi-setup');
+const wifiCurrentStatusEl = document.getElementById('wifi-current-status');
+const wifiStopBtnEl = document.getElementById('wifi-stop-btn');
+const wifiNetworksListEl = document.getElementById('wifi-networks-list');
+const wifiNetworksEmptyEl = document.getElementById('wifi-networks-empty');
+const wifiAddFormEl = document.getElementById('wifi-add-form');
+const wifiSsidInputEl = document.getElementById('wifi-ssid-input');
+const wifiPasswordInputEl = document.getElementById('wifi-password-input');
+const wifiAddStatusEl = document.getElementById('wifi-add-status');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
@@ -1803,6 +1880,149 @@ function loadRecipeFile(filename) {
       loadRecipeEmptyEl.classList.add('error');
       loadRecipeEmptyEl.style.display = '';
     });
+}
+
+// ── WiFi Setup (see wifi-setup-screen-spec.md) ──
+// Polled while this screen is open, not pushed over the WebSocket - STA
+// connection status changes on the order of seconds, not the 200ms scale
+// Manual/CLEAN needs, so a plain interval fetch is enough and keeps this
+// feature independent of the existing WS protocol.
+let wifiStatusPollTimer = null;
+
+function enterWifiSetup() {
+  menuEl.classList.remove('visible');
+  wifiSetupEl.classList.add('visible');
+  wifiAddFormEl.style.display = 'none';
+  wifiSsidInputEl.value = '';
+  wifiPasswordInputEl.value = '';
+  wifiAddStatusEl.textContent = '';
+  wifiAddStatusEl.classList.remove('error');
+  refreshWifiStatus();
+  clearInterval(wifiStatusPollTimer);
+  wifiStatusPollTimer = setInterval(refreshWifiStatus, 3000);
+}
+
+function exitWifiSetup() {
+  wifiSetupEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+  clearInterval(wifiStatusPollTimer);
+  wifiStatusPollTimer = null;
+}
+
+function toggleAddNetworkForm() {
+  const showing = wifiAddFormEl.style.display !== 'none';
+  wifiAddFormEl.style.display = showing ? 'none' : '';
+  if (!showing) {
+    wifiSsidInputEl.value = '';
+    wifiPasswordInputEl.value = '';
+    wifiAddStatusEl.textContent = '';
+    wifiAddStatusEl.classList.remove('error');
+  }
+}
+
+function renderWifiStatus(data) {
+  wifiStopBtnEl.style.display = data.sta_status === 'connecting' ? '' : 'none';
+
+  if (data.sta_status === 'connected') {
+    wifiCurrentStatusEl.textContent = 'Connected: ' + data.current_ssid;
+    wifiCurrentStatusEl.classList.add('wifi-connected');
+  } else if (data.sta_status === 'connecting') {
+    wifiCurrentStatusEl.textContent = 'Connecting to ' + data.current_ssid + '...';
+    wifiCurrentStatusEl.classList.remove('wifi-connected');
+  } else if (data.sta_status === 'stopped') {
+    wifiCurrentStatusEl.textContent = 'Stopped (AP still running)';
+    wifiCurrentStatusEl.classList.remove('wifi-connected');
+  } else {
+    wifiCurrentStatusEl.textContent = 'Not connected (AP still running)';
+    wifiCurrentStatusEl.classList.remove('wifi-connected');
+  }
+
+  wifiNetworksListEl.innerHTML = '';
+  const networks = data.networks || [];
+  if (networks.length === 0) {
+    wifiNetworksEmptyEl.style.display = '';
+    return;
+  }
+  wifiNetworksEmptyEl.style.display = 'none';
+  networks.forEach((ssid) => {
+    const row = document.createElement('div');
+    row.className = 'recipe-row';
+    const name = document.createElement('div');
+    name.className = 'recipe-row-name';
+    name.textContent = ssid;
+    const del = document.createElement('button');
+    del.className = 'wifi-row-delete';
+    del.textContent = 'Delete';
+    del.onclick = () => deleteNetwork(ssid);
+    row.appendChild(name);
+    row.appendChild(del);
+    wifiNetworksListEl.appendChild(row);
+  });
+}
+
+function refreshWifiStatus() {
+  fetch('/list_wifi')
+    .then((res) => res.json())
+    .then(renderWifiStatus)
+    .catch(() => {
+      // Transient fetch failure - the next poll tick corrects it, no need
+      // to show an error for a single missed refresh.
+    });
+}
+
+function saveNewNetwork() {
+  const ssid = wifiSsidInputEl.value.trim();
+  const password = wifiPasswordInputEl.value;
+  if (!ssid) {
+    wifiAddStatusEl.classList.add('error');
+    wifiAddStatusEl.textContent = 'SSID is required.';
+    return;
+  }
+  wifiAddStatusEl.classList.remove('error');
+  wifiAddStatusEl.textContent = 'Saving...';
+  const body = 'ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(password);
+  fetch('/add_wifi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body,
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      wifiAddStatusEl.textContent = 'Saved';
+      wifiSsidInputEl.value = '';
+      wifiPasswordInputEl.value = '';
+      refreshWifiStatus();
+    })
+    .catch(() => {
+      wifiAddStatusEl.classList.add('error');
+      wifiAddStatusEl.textContent = 'Could not save network.';
+    });
+}
+
+function deleteNetwork(ssid) {
+  fetch('/delete_wifi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'ssid=' + encodeURIComponent(ssid),
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      refreshWifiStatus();
+    })
+    .catch(() => {
+      // Leave the list as-is - the next manual action or poll tick will
+      // reflect the real state either way.
+    });
+}
+
+// There was previously no way to abort a connection attempt in progress -
+// the only recourse was a physical reset. This calls WiFi.disconnect() on
+// the ESP32 immediately and stops the automatic retry cycle until a
+// network is added or deleted again.
+function stopWifiConnection() {
+  fetch('/stop_wifi', { method: 'POST' })
+    .then(() => refreshWifiStatus())
+    .catch(() => {});
 }
 
 // ── BeerXML parsing (DOMParser) ──
@@ -5339,6 +5559,395 @@ void handleLoadRecipe() {
   f.close();
 }
 
+// ==========================================================================
+// WiFi Setup (see wifi-setup-screen-spec.md) - lets the user save more than
+// one network (e.g. home WiFi and a phone hotspot, both already proven
+// stable together with the AP in ap_sta_test.cpp) instead of a single
+// SSID/password baked into firmware. The AP (SmartBrew-Test) always runs
+// regardless of STA success - never disabled, never waited on.
+//
+// Storage is a plain tab-separated text file, one network per line
+// ("ssid\tpassword\n"), not JSON - same reasoning as recipes not needing
+// the ESP32 to understand their content: this file only ever needs to be
+// read line-by-line and rewritten whole, never partially parsed as a
+// data structure, so a tiny hand-rolled format avoids adding a JSON
+// library dependency for something this simple.
+// ==========================================================================
+#define WIFI_NETWORKS_FILE "/wifi_networks.txt"
+#define MAX_WIFI_NETWORKS 10
+#define STA_ATTEMPT_TIMEOUT_MS 8000UL
+#define STA_RETRY_CYCLE_DELAY_MS 30000UL
+
+struct WifiNetwork {
+  String ssid;
+  String password;
+};
+
+int loadWifiNetworks(WifiNetwork *out, int maxCount) {
+  int count = 0;
+  File f = SPIFFS.open(WIFI_NETWORKS_FILE, FILE_READ);
+  if (!f) return 0;
+  while (f.available() && count < maxCount) {
+    String line = f.readStringUntil('\n');
+    // NOT line.trim(): trim() strips ANY leading/trailing whitespace
+    // (isspace(), so also plain spaces) from the whole line before it's
+    // split on the tab - a password that legitimately starts or ends with
+    // a space would silently lose that character on every read-back. Only
+    // strip a trailing '\r' (defensive - we only ever write '\n' - see
+    // saveWifiNetworks() - but guards against a file edited/copied
+    // elsewhere) and skip truly empty lines.
+    if (line.length() > 0 && line.charAt(line.length() - 1) == '\r') {
+      line.remove(line.length() - 1);
+    }
+    if (line.length() == 0) continue;
+    int tabIdx = line.indexOf('\t');
+    if (tabIdx < 0) continue;
+    out[count].ssid = line.substring(0, tabIdx);
+    out[count].password = line.substring(tabIdx + 1);
+    count++;
+  }
+  f.close();
+  return count;
+}
+
+bool saveWifiNetworks(WifiNetwork *networks, int count) {
+  File f = SPIFFS.open(WIFI_NETWORKS_FILE, FILE_WRITE);
+  if (!f) return false;
+  for (int i = 0; i < count; i++) {
+    f.print(networks[i].ssid);
+    f.print('\t');
+    f.print(networks[i].password);
+    f.print('\n');
+  }
+  f.close();
+  return true;
+}
+
+// A real WiFi SSID can't contain these anyway, but this is untrusted
+// network input landing in a hand-rolled tab/newline-delimited file
+// format - reject rather than silently corrupt later reads.
+bool isValidWifiField(const String &s, size_t maxLen) {
+  if (s.length() > maxLen) return false;
+  if (s.indexOf('\t') != -1 || s.indexOf('\n') != -1 || s.indexOf('\r') != -1) return false;
+  return true;
+}
+
+// STA connection state machine - tries each saved network in list order,
+// waiting STA_ATTEMPT_TIMEOUT_MS for each before moving to the next.
+// After exhausting the whole list without success, waits
+// STA_RETRY_CYCLE_DELAY_MS before starting over (a saved network that's
+// out of range now might come back, e.g. a router reboot) rather than
+// hammering WiFi.begin() forever. Runs independently of the AP, which is
+// never touched here.
+int staNetworkIndex = 0;
+int staAttemptsThisCycle = 0;
+unsigned long staAttemptStartMs = 0;
+unsigned long staCycleWaitStartMs = 0;
+bool staWaitingForNextCycle = false;
+bool staEverStarted = false;
+// Set only by the user's explicit Cancel/Stop button (see handleStopWifi())
+// - serviceStaConnection() does nothing at all while this is true. Cleared
+// by adding/deleting a network (an implicit "try again"), never by itself.
+bool staStopped = false;
+String staAttemptingSsid = "";
+unsigned long lastStaServiceMs = 0;
+
+// Translates WiFi.status() into a name that says what it actually means -
+// distinguishes "wrong password" from "SSID not in range" from "still
+// trying", none of which are otherwise visible since the SSID is already
+// confirmed correct (see [wifi-add]/[wifi] length logs) but the ESP32
+// still isn't reaching WL_CONNECTED.
+const char *wlStatusName(wl_status_t s) {
+  switch (s) {
+    case WL_IDLE_STATUS: return "WL_IDLE_STATUS (not yet started/reset)";
+    case WL_NO_SSID_AVAIL: return "WL_NO_SSID_AVAIL (SSID not seen in range)";
+    case WL_SCAN_COMPLETED: return "WL_SCAN_COMPLETED";
+    case WL_CONNECTED: return "WL_CONNECTED";
+    case WL_CONNECT_FAILED: return "WL_CONNECT_FAILED (auth rejected - likely wrong password)";
+    case WL_CONNECTION_LOST: return "WL_CONNECTION_LOST";
+    case WL_DISCONNECTED: return "WL_DISCONNECTED (still associating/handshaking)";
+    default: return "UNKNOWN";
+  }
+}
+// Set to an impossible sentinel so the very first status seen after a new
+// attempt always gets logged once, then only logged again on a real change
+// - avoids spamming a line every second while nothing has changed.
+wl_status_t lastLoggedStaStatus = (wl_status_t)255;
+
+// ESP32 has ONE radio: per Espressif's own esp_wifi.h documentation, in
+// AP+STA mode the soft-AP is forced onto the same channel as the STA
+// connection. WiFi.begin(ssid, password) alone lets the driver pick a
+// channel via its own scan/negotiation, which was observed getting stuck
+// at WL_DISCONNECTED indefinitely when the AP (fixed on channel 6 by
+// WiFi.softAP()'s default) and the target network are on different
+// channels - confirmed on real hardware: "homesm2" was seen on channels
+// 11 and 1 (a mesh/extender broadcasting the same SSID from two units),
+// neither matching the AP's channel 6. Pre-scanning for the target SSID's
+// actual channel and passing it straight to WiFi.begin() lets the driver
+// jump there directly instead of getting stuck negotiating.
+//
+// Populated ONCE from the boot-time scan (see setup()), not re-scanned on
+// every connection attempt: a live WiFi.scanNetworks() call from inside
+// staStartAttempt() was tried first and found to fail outright (the ESP32
+// WiFi driver's scan-state bits appear to not always be ready for a second
+// scan so soon after boot's own scan+AP start), and a fresh scan is also
+// one more radio operation that could interact badly with an in-progress
+// connection attempt. A boot-time snapshot is simpler and can't race with
+// anything - it just goes stale if the environment changes at runtime,
+// which is an acceptable trade for now.
+#define MAX_BOOT_SCAN_RESULTS 20
+struct ScannedNetwork {
+  String ssid;
+  int channel;
+  int rssi;
+};
+ScannedNetwork bootScanResults[MAX_BOOT_SCAN_RESULTS];
+int bootScanResultCount = 0;
+
+bool findBestChannelForSsid(const String &ssid, int *outChannel) {
+  bool found = false;
+  int bestRssi = -1000;
+  for (int i = 0; i < bootScanResultCount; i++) {
+    if (bootScanResults[i].ssid == ssid && bootScanResults[i].rssi > bestRssi) {
+      bestRssi = bootScanResults[i].rssi;
+      *outChannel = bootScanResults[i].channel;
+      found = true;
+    }
+  }
+  return found;
+}
+
+void staStartAttempt(WifiNetwork *networks, int count) {
+  if (count == 0) return;
+  lastLoggedStaStatus = (wl_status_t)255;
+  staAttemptingSsid = networks[staNetworkIndex].ssid;
+
+  int channel = 0;
+  bool haveChannel = findBestChannelForSsid(staAttemptingSsid, &channel);
+
+  // Password VALUE is never printed (see wifi-setup-screen-spec.md - it
+  // must not end up in a place that could get pasted into chat) but its
+  // LENGTH as read back from SPIFFS is - compare this against the length
+  // logged in handleAddWifi() at save time to check the save/load round
+  // trip is lossless, without ever needing the actual password value.
+  Serial.print("[wifi] trying STA network: \"");
+  Serial.print(staAttemptingSsid);
+  Serial.print("\" (ssid length ");
+  Serial.print(staAttemptingSsid.length());
+  Serial.print(", password length ");
+  Serial.print(networks[staNetworkIndex].password.length());
+  Serial.print(", channel ");
+  if (haveChannel) {
+    Serial.print(channel);
+  } else {
+    Serial.print("unknown - not seen in scan");
+  }
+  Serial.println(")");
+
+  if (haveChannel) {
+    WiFi.begin(networks[staNetworkIndex].ssid.c_str(), networks[staNetworkIndex].password.c_str(), channel);
+  } else {
+    WiFi.begin(networks[staNetworkIndex].ssid.c_str(), networks[staNetworkIndex].password.c_str());
+  }
+  staAttemptStartMs = millis();
+  staAttemptsThisCycle++;
+  staEverStarted = true;
+}
+
+// Called once per new/updated/deleted saved network so the connection
+// manager tries it (or moves on) right away instead of waiting out
+// whatever's left of the current attempt/cooldown.
+//
+// A real hang requiring a physical reset was observed on real hardware
+// after adding a network, then adding again while the first attempt was
+// still unresolved - before this fix, that fired a second WiFi.begin() on
+// top of an unresolved one with no WiFi.disconnect() between them, which
+// is a known ESP32 WiFi-stack trigger for the driver task getting stuck.
+// WiFi.disconnect() here guarantees two connection attempts are never in
+// flight at once. Deliberately honest caveat: a from-scratch repro of the
+// exact hang (using fake, unreachable credentials, since real ones aren't
+// something this session handles - see wifi-setup-screen-spec.md) did NOT
+// reproduce it even without this fix, so the precise trigger isn't fully
+// confirmed - a real, reachable network authenticating twice in an
+// overlapping way may behave differently than two attempts against a
+// nonexistent SSID. This fix addresses the concrete, confirmed code smell
+// (no disconnect before a repeat connect) either way, and the new
+// Cancel/Stop button (see handleStopWifi()) gives a real recovery path
+// that didn't exist before if a hang is ever hit again.
+void resetStaConnectionState() {
+  unsigned long t0 = millis();
+  WiFi.disconnect();
+  Serial.print("[wifi-diag] WiFi.disconnect() (from resetStaConnectionState) returned after ");
+  Serial.print(millis() - t0);
+  Serial.println("ms");
+  staNetworkIndex = 0;
+  staAttemptsThisCycle = 0;
+  staWaitingForNextCycle = false;
+  staEverStarted = false;
+  staStopped = false;
+}
+
+// Cancel/Stop button (see wifi-setup-screen-spec.md follow-up: there was
+// no way to abort a connection attempt in progress). Disconnects
+// immediately and keeps serviceStaConnection() from restarting on its own
+// - only adding/deleting a network (resetStaConnectionState()) resumes it.
+void stopStaConnection() {
+  WiFi.disconnect();
+  staStopped = true;
+  Serial.println("[wifi] connection attempts stopped by user");
+}
+
+void serviceStaConnection() {
+  if (staStopped) return;
+
+  wl_status_t st = WiFi.status();
+  if (st == WL_CONNECTED) {
+    if (lastLoggedStaStatus != st) {
+      Serial.print("[wifi] CONNECTED to \"");
+      Serial.print(WiFi.SSID());
+      Serial.print("\", IP=");
+      Serial.println(WiFi.localIP());
+      lastLoggedStaStatus = st;
+    }
+    staWaitingForNextCycle = false;
+    return;
+  }
+
+  // Logs only on a real state change, so this stays one line per actual
+  // event rather than one per second - see wlStatusName() for what each
+  // value means and why it's the key missing piece of evidence here.
+  if (staEverStarted && !staWaitingForNextCycle && st != lastLoggedStaStatus) {
+    Serial.print("[wifi] status changed to: ");
+    Serial.println(wlStatusName(st));
+    lastLoggedStaStatus = st;
+  }
+
+  WifiNetwork networks[MAX_WIFI_NETWORKS];
+  int count = loadWifiNetworks(networks, MAX_WIFI_NETWORKS);
+  if (count == 0) return;
+
+  if (staWaitingForNextCycle) {
+    if (millis() - staCycleWaitStartMs >= STA_RETRY_CYCLE_DELAY_MS) {
+      resetStaConnectionState();
+      staStartAttempt(networks, count);
+    }
+    return;
+  }
+
+  if (!staEverStarted) {
+    staStartAttempt(networks, count);
+    return;
+  }
+
+  if (millis() - staAttemptStartMs >= STA_ATTEMPT_TIMEOUT_MS) {
+    staNetworkIndex = (staNetworkIndex + 1) % count;
+    if (staAttemptsThisCycle >= count) {
+      staWaitingForNextCycle = true;
+      staCycleWaitStartMs = millis();
+    } else {
+      staStartAttempt(networks, count);
+    }
+  }
+}
+
+void handleListWifi() {
+  WifiNetwork networks[MAX_WIFI_NETWORKS];
+  int count = loadWifiNetworks(networks, MAX_WIFI_NETWORKS);
+
+  String json = "{";
+  if (WiFi.status() == WL_CONNECTED) {
+    json += "\"sta_status\":\"connected\",\"current_ssid\":\"" + WiFi.SSID() + "\"";
+  } else if (staStopped) {
+    json += "\"sta_status\":\"stopped\",\"current_ssid\":null";
+  } else if (count > 0 && !staWaitingForNextCycle) {
+    json += "\"sta_status\":\"connecting\",\"current_ssid\":\"" + staAttemptingSsid + "\"";
+  } else {
+    json += "\"sta_status\":\"not_connected\",\"current_ssid\":null";
+  }
+  json += ",\"networks\":[";
+  for (int i = 0; i < count; i++) {
+    if (i > 0) json += ",";
+    json += "\"" + networks[i].ssid + "\"";
+  }
+  json += "]}";
+  server.send(200, "application/json", json);
+}
+
+void handleAddWifi() {
+  String ssid = server.arg("ssid");
+  String password = server.arg("password");
+  // Same non-leaking length-only logging as staStartAttempt() - lets the
+  // two Serial lines be compared directly to confirm (or rule out) SPIFFS
+  // save/load corruption without ever printing the password itself.
+  Serial.print("[wifi-add] received ssid=\"");
+  Serial.print(ssid);
+  Serial.print("\" (ssid length ");
+  Serial.print(ssid.length());
+  Serial.print(", password length ");
+  Serial.print(password.length());
+  Serial.println(" as received from the form)");
+  if (!isValidWifiField(ssid, 32) || ssid.length() == 0) {
+    server.send(400, "application/json", "{\"error\":\"Invalid SSID.\"}");
+    return;
+  }
+  if (!isValidWifiField(password, 63)) {
+    server.send(400, "application/json", "{\"error\":\"Invalid password.\"}");
+    return;
+  }
+
+  WifiNetwork networks[MAX_WIFI_NETWORKS];
+  int count = loadWifiNetworks(networks, MAX_WIFI_NETWORKS);
+
+  int existingIdx = -1;
+  for (int i = 0; i < count; i++) {
+    if (networks[i].ssid == ssid) { existingIdx = i; break; }
+  }
+  if (existingIdx != -1) {
+    networks[existingIdx].password = password;
+  } else {
+    if (count >= MAX_WIFI_NETWORKS) {
+      server.send(507, "application/json", "{\"error\":\"Too many saved networks.\"}");
+      return;
+    }
+    networks[count].ssid = ssid;
+    networks[count].password = password;
+    count++;
+  }
+
+  if (!saveWifiNetworks(networks, count)) {
+    server.send(500, "application/json", "{\"error\":\"Could not save network.\"}");
+    return;
+  }
+  resetStaConnectionState();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleDeleteWifi() {
+  String ssid = server.arg("ssid");
+  WifiNetwork networks[MAX_WIFI_NETWORKS];
+  int count = loadWifiNetworks(networks, MAX_WIFI_NETWORKS);
+
+  WifiNetwork remaining[MAX_WIFI_NETWORKS];
+  int remainingCount = 0;
+  for (int i = 0; i < count; i++) {
+    if (networks[i].ssid != ssid) {
+      remaining[remainingCount++] = networks[i];
+    }
+  }
+
+  if (!saveWifiNetworks(remaining, remainingCount)) {
+    server.send(500, "application/json", "{\"error\":\"Could not update saved networks.\"}");
+    return;
+  }
+  resetStaConnectionState();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleStopWifi() {
+  stopStaConnection();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
 void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED: {
@@ -5603,12 +6212,42 @@ void setup() {
   // WiFi + boot sensor check - see the block above readTemp()/formatSensor()
   // for the reasoning. Runs after everything else in setup() so a WiFi
   // issue can never delay arming the watchdog or starting lcdTask.
+  // AP_STA (not just AP) so saved networks (see wifi-setup-screen-spec.md)
+  // can be tried as a STA client while SmartBrew-Test keeps running - both
+  // proven stable together on real hardware in ap_sta_test.cpp.
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID, AP_PASSWORD);
   Serial.print("[boot] AP started: \"");
   Serial.print(AP_SSID);
   Serial.println("\"");
   Serial.print("[boot] http://");
   Serial.println(WiFi.softAPIP());
+
+  // One-time scan feeding findBestChannelForSsid() (see its comment) - the
+  // channel a saved STA network is actually on isn't known otherwise, and
+  // WiFi.begin(ssid, password) without a channel hint was observed getting
+  // stuck at WL_DISCONNECTED indefinitely on this exact hardware/network.
+  Serial.println("[wifi-scan] scanning for networks visible to the ESP32...");
+  int scanCount = WiFi.scanNetworks();
+  if (scanCount <= 0) {
+    Serial.println("[wifi-scan] no networks found at all");
+  } else {
+    for (int i = 0; i < scanCount; i++) {
+      Serial.print("[wifi-scan] \"");
+      Serial.print(WiFi.SSID(i));
+      Serial.print("\" rssi=");
+      Serial.print(WiFi.RSSI(i));
+      Serial.print("dBm channel=");
+      Serial.println(WiFi.channel(i));
+      if (bootScanResultCount < MAX_BOOT_SCAN_RESULTS) {
+        bootScanResults[bootScanResultCount].ssid = WiFi.SSID(i);
+        bootScanResults[bootScanResultCount].channel = WiFi.channel(i);
+        bootScanResults[bootScanResultCount].rssi = WiFi.RSSI(i);
+        bootScanResultCount++;
+      }
+    }
+  }
+  WiFi.scanDelete();
 
   // true = format on first use / if mount fails, so a fresh or corrupted
   // partition doesn't leave saved-recipe routes silently broken forever.
@@ -5628,6 +6267,10 @@ void setup() {
   server.on("/save_recipe", HTTP_POST, handleSaveRecipe);
   server.on("/list_recipes", HTTP_GET, handleListRecipes);
   server.on("/load_recipe", HTTP_GET, handleLoadRecipe);
+  server.on("/list_wifi", HTTP_GET, handleListWifi);
+  server.on("/add_wifi", HTTP_POST, handleAddWifi);
+  server.on("/delete_wifi", HTTP_POST, handleDeleteWifi);
+  server.on("/stop_wifi", HTTP_POST, handleStopWifi);
   server.begin();
 
   webSocket.begin();
@@ -5696,6 +6339,14 @@ void loop() {
     lastManualPushMs = millis();
     String manualJson = buildManualJson();
     webSocket.broadcastTXT(manualJson);
+  }
+
+  // Gated to ~1/s, not every loop() iteration - it reads a SPIFFS file
+  // each call, which is unnecessary work at the ~1.5Hz loop() already
+  // runs and irrelevant at STA-connection-attempt timescales anyway.
+  if (millis() - lastStaServiceMs >= 1000UL) {
+    lastStaServiceMs = millis();
+    serviceStaConnection();
   }
 
   char s0[24], s1[24], l0[24], l1[24];

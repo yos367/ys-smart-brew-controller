@@ -412,12 +412,12 @@
 
   /* ══ IMPORT RECIPE (step 1: parse + preview only, no save yet -
      see import-file-step1-spec.md) ══ */
-  #import-recipe, #load-recipe {
+  #import-recipe, #load-recipe, #wifi-setup {
     display:none; position:fixed; inset:0;
     background:var(--bg-primary);
     flex-direction:column; align-items:center;
   }
-  #import-recipe.visible, #load-recipe.visible { display:flex; animation:menuIn 0.4s ease; }
+  #import-recipe.visible, #load-recipe.visible, #wifi-setup.visible { display:flex; animation:menuIn 0.4s ease; }
 
   .import-body {
     width:min(400px,88vw); margin-top:64px; padding-bottom:40px;
@@ -489,6 +489,15 @@
     display:flex; flex-direction:column; align-items:center; gap:8px;
     padding-top:6px;
   }
+
+  .wifi-row-delete {
+    background:none; border:1px solid var(--border-dim); border-radius:4px;
+    color:var(--brand-orange); font-size:13px; font-weight:600;
+    padding:4px 10px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    font-family:'Rajdhani',sans-serif;
+  }
+  .wifi-row-delete:active { transform:scale(0.95); }
+  .wifi-connected { color:var(--brand-teal); }
 </style>
 </head>
 <body>
@@ -576,6 +585,14 @@
       <div class="mbtn-body">
         <div class="mbtn-title">CLEAN</div>
         <div class="mbtn-sub">Simple on/off heat to a target temperature</div>
+      </div>
+      <div class="mbtn-arr">›</div>
+    </div>
+    <div class="mbtn" onclick="enterWifiSetup()">
+      <div class="mbtn-icon">📶</div>
+      <div class="mbtn-body">
+        <div class="mbtn-title">WiFi Setup</div>
+        <div class="mbtn-sub">Manage saved networks</div>
       </div>
       <div class="mbtn-arr">›</div>
     </div>
@@ -801,6 +818,57 @@
   </div>
 </div>
 
+<!-- ══ WIFI SETUP ══ (see wifi-setup-screen-spec.md) -->
+<div id="wifi-setup">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitWifiSetup()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="import-body">
+    <div class="menu-heading">
+      <div class="h-line"></div>
+      <div class="h-text">WiFi Setup</div>
+      <div class="h-line r"></div>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Current Connection</div>
+      <div class="import-status" id="wifi-current-status">--</div>
+      <button class="timer-btn" id="wifi-stop-btn" onclick="stopWifiConnection()" style="display:none">Cancel / Stop</button>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Saved Networks</div>
+      <div class="import-status" id="wifi-networks-empty" style="display:none">No saved networks yet</div>
+      <div class="recipe-list" id="wifi-networks-list"></div>
+    </div>
+
+    <div class="import-save-row">
+      <button class="timer-btn" onclick="toggleAddNetworkForm()">Add Network</button>
+    </div>
+
+    <div class="heat-control" id="wifi-add-form" style="display:none">
+      <div class="setpoint-row">
+        <div class="setpoint-label">SSID</div>
+        <input type="text" class="setpoint-input" id="wifi-ssid-input" style="width:170px" maxlength="32">
+      </div>
+      <div class="setpoint-row">
+        <div class="setpoint-label">Password</div>
+        <input type="password" class="setpoint-input" id="wifi-password-input" style="width:170px" maxlength="63">
+      </div>
+      <button class="control-btn" onclick="saveNewNetwork()">Save Network</button>
+      <div class="import-status" id="wifi-add-status"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 // Boot-sensor-check protocol over the same WebSocket (port 81) used
 // elsewhere in this project - see boot-sensor-check-spec.md. Real status
@@ -859,6 +927,15 @@ const importSaveRowEl = document.getElementById('import-save-row');
 const loadRecipeEl = document.getElementById('load-recipe');
 const loadRecipeListEl = document.getElementById('load-recipe-list');
 const loadRecipeEmptyEl = document.getElementById('load-recipe-empty');
+const wifiSetupEl = document.getElementById('wifi-setup');
+const wifiCurrentStatusEl = document.getElementById('wifi-current-status');
+const wifiStopBtnEl = document.getElementById('wifi-stop-btn');
+const wifiNetworksListEl = document.getElementById('wifi-networks-list');
+const wifiNetworksEmptyEl = document.getElementById('wifi-networks-empty');
+const wifiAddFormEl = document.getElementById('wifi-add-form');
+const wifiSsidInputEl = document.getElementById('wifi-ssid-input');
+const wifiPasswordInputEl = document.getElementById('wifi-password-input');
+const wifiAddStatusEl = document.getElementById('wifi-add-status');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
@@ -1279,6 +1356,149 @@ function loadRecipeFile(filename) {
       loadRecipeEmptyEl.classList.add('error');
       loadRecipeEmptyEl.style.display = '';
     });
+}
+
+// ── WiFi Setup (see wifi-setup-screen-spec.md) ──
+// Polled while this screen is open, not pushed over the WebSocket - STA
+// connection status changes on the order of seconds, not the 200ms scale
+// Manual/CLEAN needs, so a plain interval fetch is enough and keeps this
+// feature independent of the existing WS protocol.
+let wifiStatusPollTimer = null;
+
+function enterWifiSetup() {
+  menuEl.classList.remove('visible');
+  wifiSetupEl.classList.add('visible');
+  wifiAddFormEl.style.display = 'none';
+  wifiSsidInputEl.value = '';
+  wifiPasswordInputEl.value = '';
+  wifiAddStatusEl.textContent = '';
+  wifiAddStatusEl.classList.remove('error');
+  refreshWifiStatus();
+  clearInterval(wifiStatusPollTimer);
+  wifiStatusPollTimer = setInterval(refreshWifiStatus, 3000);
+}
+
+function exitWifiSetup() {
+  wifiSetupEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+  clearInterval(wifiStatusPollTimer);
+  wifiStatusPollTimer = null;
+}
+
+function toggleAddNetworkForm() {
+  const showing = wifiAddFormEl.style.display !== 'none';
+  wifiAddFormEl.style.display = showing ? 'none' : '';
+  if (!showing) {
+    wifiSsidInputEl.value = '';
+    wifiPasswordInputEl.value = '';
+    wifiAddStatusEl.textContent = '';
+    wifiAddStatusEl.classList.remove('error');
+  }
+}
+
+function renderWifiStatus(data) {
+  wifiStopBtnEl.style.display = data.sta_status === 'connecting' ? '' : 'none';
+
+  if (data.sta_status === 'connected') {
+    wifiCurrentStatusEl.textContent = 'Connected: ' + data.current_ssid;
+    wifiCurrentStatusEl.classList.add('wifi-connected');
+  } else if (data.sta_status === 'connecting') {
+    wifiCurrentStatusEl.textContent = 'Connecting to ' + data.current_ssid + '...';
+    wifiCurrentStatusEl.classList.remove('wifi-connected');
+  } else if (data.sta_status === 'stopped') {
+    wifiCurrentStatusEl.textContent = 'Stopped (AP still running)';
+    wifiCurrentStatusEl.classList.remove('wifi-connected');
+  } else {
+    wifiCurrentStatusEl.textContent = 'Not connected (AP still running)';
+    wifiCurrentStatusEl.classList.remove('wifi-connected');
+  }
+
+  wifiNetworksListEl.innerHTML = '';
+  const networks = data.networks || [];
+  if (networks.length === 0) {
+    wifiNetworksEmptyEl.style.display = '';
+    return;
+  }
+  wifiNetworksEmptyEl.style.display = 'none';
+  networks.forEach((ssid) => {
+    const row = document.createElement('div');
+    row.className = 'recipe-row';
+    const name = document.createElement('div');
+    name.className = 'recipe-row-name';
+    name.textContent = ssid;
+    const del = document.createElement('button');
+    del.className = 'wifi-row-delete';
+    del.textContent = 'Delete';
+    del.onclick = () => deleteNetwork(ssid);
+    row.appendChild(name);
+    row.appendChild(del);
+    wifiNetworksListEl.appendChild(row);
+  });
+}
+
+function refreshWifiStatus() {
+  fetch('/list_wifi')
+    .then((res) => res.json())
+    .then(renderWifiStatus)
+    .catch(() => {
+      // Transient fetch failure - the next poll tick corrects it, no need
+      // to show an error for a single missed refresh.
+    });
+}
+
+function saveNewNetwork() {
+  const ssid = wifiSsidInputEl.value.trim();
+  const password = wifiPasswordInputEl.value;
+  if (!ssid) {
+    wifiAddStatusEl.classList.add('error');
+    wifiAddStatusEl.textContent = 'SSID is required.';
+    return;
+  }
+  wifiAddStatusEl.classList.remove('error');
+  wifiAddStatusEl.textContent = 'Saving...';
+  const body = 'ssid=' + encodeURIComponent(ssid) + '&password=' + encodeURIComponent(password);
+  fetch('/add_wifi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body,
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      wifiAddStatusEl.textContent = 'Saved';
+      wifiSsidInputEl.value = '';
+      wifiPasswordInputEl.value = '';
+      refreshWifiStatus();
+    })
+    .catch(() => {
+      wifiAddStatusEl.classList.add('error');
+      wifiAddStatusEl.textContent = 'Could not save network.';
+    });
+}
+
+function deleteNetwork(ssid) {
+  fetch('/delete_wifi', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'ssid=' + encodeURIComponent(ssid),
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      refreshWifiStatus();
+    })
+    .catch(() => {
+      // Leave the list as-is - the next manual action or poll tick will
+      // reflect the real state either way.
+    });
+}
+
+// There was previously no way to abort a connection attempt in progress -
+// the only recourse was a physical reset. This calls WiFi.disconnect() on
+// the ESP32 immediately and stops the automatic retry cycle until a
+// network is added or deleted again.
+function stopWifiConnection() {
+  fetch('/stop_wifi', { method: 'POST' })
+    .then(() => refreshWifiStatus())
+    .catch(() => {});
 }
 
 // ── BeerXML parsing (DOMParser) ──
