@@ -6,6 +6,10 @@
 #include <WebServer.h>
 #include <WebSocketsServer.h>
 #include <SPIFFS.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <base64.h>
 
 // --- PT100 sensors (software SPI) ---
 // 2026-09-03: the two boards share NOTHING - each has its own SCK, MISO,
@@ -801,9 +805,9 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   .mbtn-arr { font-size:16px; color:var(--text-dimmer); transition:all 0.15s ease; }
   .mbtn:hover .mbtn-arr { color:var(--brand-orange); transform:translateX(3px); }
 
-  /* Shown-disabled, not omitted - Brewfather import is on the map but not
-     built yet. No hover/active feedback, no arrow, so it doesn't invite a
-     tap that does nothing. */
+  /* For a menu item that's on the map but not built yet - shown, not
+     omitted, but with no hover/active feedback and no arrow so it doesn't
+     invite a tap that does nothing. */
   .mbtn.disabled { cursor:default; opacity:0.5; }
   .mbtn.disabled:hover, .mbtn.disabled:active { border-color:var(--border-dim); background:var(--panel-bg); transform:none; }
   .mbtn.disabled .mbtn-arr { display:none; }
@@ -936,12 +940,13 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
 
   /* ══ IMPORT RECIPE (step 1: parse + preview only, no save yet -
      see import-file-step1-spec.md) ══ */
-  #import-recipe, #load-recipe, #wifi-setup {
+  #import-recipe, #load-recipe, #wifi-setup, #brewfather-settings, #brewfather-list {
     display:none; position:fixed; inset:0;
     background:var(--bg-primary);
     flex-direction:column; align-items:center;
   }
-  #import-recipe.visible, #load-recipe.visible, #wifi-setup.visible { display:flex; animation:menuIn 0.4s ease; }
+  #import-recipe.visible, #load-recipe.visible, #wifi-setup.visible,
+  #brewfather-settings.visible, #brewfather-list.visible { display:flex; animation:menuIn 0.4s ease; }
 
   .import-body {
     width:min(400px,88vw); margin-top:64px; padding-bottom:40px;
@@ -961,9 +966,21 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   }
   .import-status.error { color:var(--brand-orange); }
 
-  .import-result { display:none; flex-direction:column; gap:20px; }
+  /* 26px, not the original 20px - real separation between sections
+     (Fermentables vs Hops vs ...), not just a subtle tone shift that
+     would wash out in bright glare. */
+  .import-result { display:none; flex-direction:column; gap:26px; }
   .import-result.visible { display:flex; }
 
+  /* Only Brewfather's `thumb` (a small base64 data URI already in the
+     recipe JSON) is shown - no network fetch of any kind, and hidden
+     entirely (not a broken-image icon) when a recipe has none, e.g. every
+     BeerXML import. */
+  .recipe-thumb {
+    display:none; width:100%; max-width:220px; margin:0 auto;
+    border-radius:6px; border:1px solid var(--border-dim);
+  }
+  .recipe-thumb.visible { display:block; }
   .recipe-title {
     font-family:'Rajdhani',sans-serif; font-size:20px; font-weight:600;
     color:var(--text-primary); text-align:center;
@@ -972,10 +989,23 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     font-family:'Share Tech Mono',monospace; font-size:11px;
     letter-spacing:1px; color:var(--text-dim); text-align:center;
   }
+  .recipe-meta {
+    font-family:'Share Tech Mono',monospace; font-size:10px;
+    letter-spacing:1px; color:var(--text-dimmer); text-align:center;
+  }
 
-  .recipe-stats { display:flex; gap:10px; }
+  /* ══ Recipe display (see recipe-display-redesign-spec.md) ══
+     Real accessibility targets, not just visual polish: key numbers at
+     16px+ effective size, real borders/gaps between sections rather than
+     subtle tone shifts (glare on a phone screen in a kitchen/garage
+     washes those out), and generous row spacing over a dense desktop-
+     style table, since this gets glanced at with wet/busy hands, not
+     read closely at a desk. */
+  /* Grid, not flex-wrap - 4 cards (OG/FG/IBU/ABV) form an even 2x2 rather
+     than a lone 4th card stretching to fill a leftover row. */
+  .recipe-stats { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
   .stat-card {
-    flex:1; background:var(--panel-bg); border:1px solid var(--border-dim);
+    background:var(--panel-bg); border:1px solid var(--border-dim);
     border-radius:4px; padding:12px; text-align:center;
   }
   .stat-card-label {
@@ -983,31 +1013,83 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     letter-spacing:2px; color:var(--text-dimmer); margin-bottom:4px;
   }
   .stat-card-value {
-    font-family:'Rajdhani',sans-serif; font-size:18px; font-weight:600;
-    color:var(--text-primary);
+    font-family:'Rajdhani',sans-serif; font-size:19px; font-weight:600;
+    color:var(--brand-orange);
   }
 
-  .recipe-section { display:flex; flex-direction:column; gap:8px; }
-  .recipe-section-label {
-    font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
-    letter-spacing:2px; color:var(--text-dimmer); text-transform:uppercase;
+  .recipe-section { display:flex; flex-direction:column; gap:10px; }
+  /* A real 1px rule under the header, not just a color/weight shift -
+     subtle tone changes wash out in bright glare, a hard edge doesn't. */
+  .recipe-section-header {
+    display:flex; align-items:baseline; gap:8px;
+    padding-bottom:7px; border-bottom:1px solid var(--border-dim);
   }
-  .recipe-list { display:flex; flex-direction:column; gap:6px; }
+  .recipe-section-icon { font-size:14px; line-height:1; }
+  .recipe-section-label {
+    font-family:'Rajdhani',sans-serif; font-size:14px; font-weight:700;
+    letter-spacing:2px; color:var(--brand-teal); text-transform:uppercase;
+    flex:1 1 auto;
+  }
+  .recipe-section-total {
+    font-family:'Share Tech Mono',monospace; font-size:12px; color:var(--text-dim);
+  }
+  /* 10px, not the original 6px - breathing room between rows even at the
+     cost of extra scrolling (explicit accessibility requirement). */
+  .recipe-list { display:flex; flex-direction:column; gap:10px; }
+  /* Base card, shared by both row styles below - deliberately no layout
+     direction opinion here, since the plain (name-only, or name+delete)
+     rows used by Load Recipe/WiFi Setup/Brewfather's list screen need a
+     horizontal layout while the richer ingredient rows below need a
+     vertical (two-line) one. */
   .recipe-row {
     display:flex; justify-content:space-between; align-items:center;
     background:var(--panel-bg); border:1px solid var(--border-dim);
-    border-radius:4px; padding:10px 14px;
-  }
-  .recipe-row-name {
-    font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:500;
-    color:#ccc;
-  }
-  .recipe-row-detail {
-    font-family:'Share Tech Mono',monospace; font-size:11px;
-    color:var(--text-dim);
+    border-radius:6px; padding:12px 14px;
   }
   .recipe-row.clickable { cursor:pointer; }
   .recipe-row.clickable:active { transform:scale(0.98); }
+  /* Two-line ingredient row (amount|name|value, then a dimmed detail line)
+     - combined with .recipe-row for the shared card look, e.g.
+     class="recipe-row recipe-row-rich". */
+  .recipe-row-rich { flex-direction:column; align-items:stretch; gap:4px; }
+  /* amount | name | value, aligned in real columns (a fixed-ish amount
+     column, name filling the middle, value pinned right) rather than
+     free-flowing text - the same visual read as a table without an
+     actual <table>. Value is capped at 40% (not auto/nowrap) and allowed
+     to wrap - an unconstrained auto-width nowrap value (a long All Other
+     Fields entry like a notes string) was collapsing the 1fr name column
+     to 0 width and overflowing the row horizontally. */
+  .recipe-row-top {
+    display:grid; grid-template-columns:minmax(46px,auto) 1fr minmax(0,40%);
+    gap:10px; align-items:baseline;
+  }
+  /* No amount column at all for label-only rows (Equipment, Style Range,
+     footer stats) - name gets the space instead of an empty reserved
+     column, which was truncating longer labels unnecessarily. */
+  .recipe-row-top.no-amt { grid-template-columns:1fr minmax(0,40%); }
+  .recipe-row-amt {
+    font-family:'Share Tech Mono',monospace; font-size:15px; font-weight:600;
+    color:var(--text-primary);
+  }
+  .recipe-row-name {
+    font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:600;
+    color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  .recipe-row-val {
+    font-family:'Share Tech Mono',monospace; font-size:15px; font-weight:700;
+    color:var(--brand-orange); text-align:right; white-space:normal; overflow-wrap:break-word;
+  }
+  .recipe-row-detail {
+    font-family:'Share Tech Mono',monospace; font-size:12px;
+    color:var(--text-dim);
+  }
+  /* Same dimmed detail line, but split left/right - e.g. Misc's TYPE on
+     the left and USE tucked under its TIME value on the right. */
+  .recipe-row-detail-split {
+    display:flex; justify-content:space-between; gap:10px;
+    font-family:'Share Tech Mono',monospace; font-size:12px;
+    color:var(--text-dim);
+  }
 
   .import-save-row {
     display:flex; flex-direction:column; align-items:center; gap:8px;
@@ -1088,11 +1170,11 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       </div>
       <div class="mbtn-arr">›</div>
     </div>
-    <div class="mbtn disabled">
+    <div class="mbtn" onclick="enterBrewfather()">
       <div class="mbtn-icon">🔗</div>
       <div class="mbtn-body">
         <div class="mbtn-title">Brewfather</div>
-        <div class="mbtn-sub">Coming soon</div>
+        <div class="mbtn-sub">Import a recipe from Brewfather</div>
       </div>
       <div class="mbtn-arr">›</div>
     </div>
@@ -1256,13 +1338,19 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     </div>
 
     <div class="import-result" id="import-result">
+      <img class="recipe-thumb" id="recipe-thumb" alt="">
       <div class="recipe-title" id="recipe-name">--</div>
       <div class="recipe-style" id="recipe-style"></div>
+      <div class="recipe-meta" id="recipe-meta"></div>
 
       <div class="recipe-stats">
         <div class="stat-card">
           <div class="stat-card-label">OG</div>
           <div class="stat-card-value" id="recipe-og">--</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">FG</div>
+          <div class="stat-card-value" id="recipe-fg">--</div>
         </div>
         <div class="stat-card">
           <div class="stat-card-label">IBU</div>
@@ -1274,38 +1362,88 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
         </div>
       </div>
 
+      <div class="recipe-section" id="section-equipment">
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">⚙</span>
+          <span class="recipe-section-label">Equipment</span>
+          <span class="recipe-section-total" id="section-equipment-total"></span>
+        </div>
+        <div class="recipe-list" id="recipe-equipment-list"></div>
+      </div>
+
       <div class="recipe-section" id="section-fermentables">
-        <div class="recipe-section-label">Grain Bill</div>
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🌾</span>
+          <span class="recipe-section-label">Fermentables</span>
+          <span class="recipe-section-total" id="section-fermentables-total"></span>
+        </div>
         <div class="recipe-list" id="recipe-fermentables-list"></div>
       </div>
 
       <div class="recipe-section" id="section-mash">
-        <div class="recipe-section-label">Mash Steps</div>
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🌡</span>
+          <span class="recipe-section-label">Mash Profile</span>
+          <span class="recipe-section-total" id="section-mash-total"></span>
+        </div>
         <div class="recipe-list" id="recipe-mash-list"></div>
       </div>
 
+      <div class="recipe-section" id="section-fermentation">
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🧪</span>
+          <span class="recipe-section-label">Fermentation Profile</span>
+          <span class="recipe-section-total" id="section-fermentation-total"></span>
+        </div>
+        <div class="recipe-list" id="recipe-fermentation-list"></div>
+      </div>
+
       <div class="recipe-section" id="section-hops">
-        <div class="recipe-section-label">Hops</div>
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🌿</span>
+          <span class="recipe-section-label">Hops</span>
+          <span class="recipe-section-total" id="section-hops-total"></span>
+        </div>
         <div class="recipe-list" id="recipe-hops-list"></div>
       </div>
 
       <div class="recipe-section" id="section-yeast">
-        <div class="recipe-section-label">Yeast</div>
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🧫</span>
+          <span class="recipe-section-label">Yeast</span>
+        </div>
         <div class="recipe-list" id="recipe-yeast-list"></div>
       </div>
 
       <div class="recipe-section" id="section-water">
-        <div class="recipe-section-label">Water / Minerals</div>
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">💧</span>
+          <span class="recipe-section-label">Water / Minerals</span>
+        </div>
         <div class="recipe-list" id="recipe-water-list"></div>
       </div>
 
       <div class="recipe-section" id="section-misc">
-        <div class="recipe-section-label">Other Additions</div>
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🧂</span>
+          <span class="recipe-section-label">Other Additions</span>
+        </div>
         <div class="recipe-list" id="recipe-misc-list"></div>
       </div>
 
+      <div class="recipe-section" id="section-style-range">
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">📏</span>
+          <span class="recipe-section-label">Style Range</span>
+        </div>
+        <div class="recipe-list" id="recipe-style-range-list"></div>
+      </div>
+
       <div class="recipe-section" id="section-all-fields">
-        <div class="recipe-section-label">All Other Fields</div>
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">📋</span>
+          <span class="recipe-section-label">All Other Fields</span>
+        </div>
         <div class="recipe-list" id="recipe-all-fields-list"></div>
       </div>
 
@@ -1393,6 +1531,70 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   </div>
 </div>
 
+<!-- ══ BREWFATHER SETTINGS ══ (see brewfather-api-spec.md) -->
+<div id="brewfather-settings">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitBrewfatherSettings()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="import-body">
+    <div class="menu-heading">
+      <div class="h-line"></div>
+      <div class="h-text">Brewfather Settings</div>
+      <div class="h-line r"></div>
+    </div>
+
+    <div class="heat-control">
+      <div class="setpoint-row">
+        <div class="setpoint-label">User ID</div>
+        <input type="text" class="setpoint-input" id="brewfather-userid-input" style="width:170px" maxlength="64">
+      </div>
+      <div class="setpoint-row">
+        <div class="setpoint-label">API Key</div>
+        <input type="password" class="setpoint-input" id="brewfather-apikey-input" style="width:170px" maxlength="128">
+      </div>
+      <button class="control-btn" onclick="saveBrewfatherSettings()">Save &amp; Continue</button>
+      <div class="import-status" id="brewfather-settings-status"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ BREWFATHER RECIPE LIST ══ -->
+<div id="brewfather-list">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitBrewfatherList()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="import-body">
+    <div class="menu-heading">
+      <div class="h-line"></div>
+      <div class="h-text">Brewfather Recipes</div>
+      <div class="h-line r"></div>
+    </div>
+
+    <div class="import-save-row">
+      <button class="timer-btn" onclick="enterBrewfatherSettings()">Change Settings</button>
+    </div>
+
+    <div class="import-status" id="brewfather-list-status">Loading...</div>
+    <div class="recipe-list" id="brewfather-list-items"></div>
+  </div>
+</div>
+
 <script>
 // Boot-sensor-check protocol over the same WebSocket (port 81) used
 // elsewhere in this project - see boot-sensor-check-spec.md. Real status
@@ -1427,16 +1629,30 @@ const importRecipeHeadingEl = document.getElementById('import-recipe-heading');
 const importPickerEl = document.getElementById('import-picker');
 const importStatusEl = document.getElementById('import-status');
 const importResultEl = document.getElementById('import-result');
+const recipeThumbEl = document.getElementById('recipe-thumb');
 const recipeNameEl = document.getElementById('recipe-name');
 const recipeStyleEl = document.getElementById('recipe-style');
+const recipeMetaEl = document.getElementById('recipe-meta');
 const recipeOgEl = document.getElementById('recipe-og');
+const recipeFgEl = document.getElementById('recipe-fg');
 const recipeIbuEl = document.getElementById('recipe-ibu');
 const recipeAbvEl = document.getElementById('recipe-abv');
+const sectionEquipmentEl = document.getElementById('section-equipment');
+const sectionEquipmentTotalEl = document.getElementById('section-equipment-total');
+const recipeEquipmentListEl = document.getElementById('recipe-equipment-list');
 const sectionFermentablesEl = document.getElementById('section-fermentables');
+const sectionFermentablesTotalEl = document.getElementById('section-fermentables-total');
 const recipeFermentablesListEl = document.getElementById('recipe-fermentables-list');
 const sectionMashEl = document.getElementById('section-mash');
+const sectionMashTotalEl = document.getElementById('section-mash-total');
 const recipeMashListEl = document.getElementById('recipe-mash-list');
+const sectionFermentationEl = document.getElementById('section-fermentation');
+const sectionFermentationTotalEl = document.getElementById('section-fermentation-total');
+const recipeFermentationListEl = document.getElementById('recipe-fermentation-list');
+const sectionStyleRangeEl = document.getElementById('section-style-range');
+const recipeStyleRangeListEl = document.getElementById('recipe-style-range-list');
 const sectionHopsEl = document.getElementById('section-hops');
+const sectionHopsTotalEl = document.getElementById('section-hops-total');
 const recipeHopsListEl = document.getElementById('recipe-hops-list');
 const sectionYeastEl = document.getElementById('section-yeast');
 const recipeYeastListEl = document.getElementById('recipe-yeast-list');
@@ -1460,6 +1676,14 @@ const wifiAddFormEl = document.getElementById('wifi-add-form');
 const wifiSsidInputEl = document.getElementById('wifi-ssid-input');
 const wifiPasswordInputEl = document.getElementById('wifi-password-input');
 const wifiAddStatusEl = document.getElementById('wifi-add-status');
+
+const brewfatherSettingsEl = document.getElementById('brewfather-settings');
+const brewfatherListEl = document.getElementById('brewfather-list');
+const brewfatherUseridInput = document.getElementById('brewfather-userid-input');
+const brewfatherApikeyInput = document.getElementById('brewfather-apikey-input');
+const brewfatherSettingsStatusEl = document.getElementById('brewfather-settings-status');
+const brewfatherListStatusEl = document.getElementById('brewfather-list-status');
+const brewfatherListItemsEl = document.getElementById('brewfather-list-items');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
@@ -1708,34 +1932,193 @@ function exitImportRecipe() {
   document.getElementById('import-file-input').value = '';
 }
 
-function renderRecipeList(container, items, formatDetail) {
-  container.innerHTML = '';
-  (items || []).forEach((item) => {
-    const row = document.createElement('div');
-    row.className = 'recipe-row';
-    const name = document.createElement('div');
-    name.className = 'recipe-row-name';
-    name.textContent = item.name || '(unnamed)';
+// Renders one ingredient/field row in the amount|name|value + dimmed-
+// detail-line layout (see recipe-display-redesign-spec.md) - `row` is
+// {amt, name, val, detail}, any of which can be '' to leave that slot
+// blank (e.g. yeast has no amount, so amt is just ''). This is the one
+// row shape used everywhere in the recipe preview now, all_fields
+// included, rather than a separate free-text format per section.
+// `row` is {amt, name, val, detail} for a single dimmed line under the
+// primary row, OR {amt, name, val, detailLeft, detailRight} for a second
+// line that itself has a left (e.g. ingredient TYPE) and right (e.g.
+// MISC's USE, under a TIME value) part - Misc rows need that split (a
+// time value stacked over its use, only when a time actually applies -
+// see mapMiscRow()), everything else just uses plain `detail`.
+function renderIngredientRow(container, row) {
+  const el = document.createElement('div');
+  el.className = 'recipe-row recipe-row-rich';
+  const top = document.createElement('div');
+  top.className = 'recipe-row-top';
+  // Label-only rows (Equipment, Style Range, footer stats - anything with
+  // no natural "amount", just a name and a value) have no amt column at
+  // all, rather than an empty one still reserving its minimum width - a
+  // real truncation problem hit on labels like "Brewhouse Efficiency"
+  // that are much longer than a typical ingredient name.
+  if (row.amt) {
+    const amt = document.createElement('div');
+    amt.className = 'recipe-row-amt';
+    amt.textContent = row.amt;
+    top.appendChild(amt);
+  } else {
+    top.classList.add('no-amt');
+  }
+  const name = document.createElement('div');
+  name.className = 'recipe-row-name';
+  name.textContent = row.name || '(unnamed)';
+  const val = document.createElement('div');
+  val.className = 'recipe-row-val';
+  val.textContent = row.val || '';
+  top.appendChild(name);
+  top.appendChild(val);
+  el.appendChild(top);
+  if (row.detailLeft || row.detailRight) {
+    const detailRow = document.createElement('div');
+    detailRow.className = 'recipe-row-detail-split';
+    const left = document.createElement('span');
+    left.textContent = row.detailLeft || '';
+    const right = document.createElement('span');
+    right.textContent = row.detailRight || '';
+    detailRow.appendChild(left);
+    detailRow.appendChild(right);
+    el.appendChild(detailRow);
+  } else if (row.detail) {
     const detail = document.createElement('div');
     detail.className = 'recipe-row-detail';
-    detail.textContent = formatDetail(item);
-    row.appendChild(name);
-    row.appendChild(detail);
-    container.appendChild(row);
-  });
+    detail.textContent = row.detail;
+    el.appendChild(detail);
+  }
+  container.appendChild(el);
+}
+
+function renderIngredientList(container, items, mapItem) {
+  container.innerHTML = '';
+  (items || []).forEach((item) => renderIngredientRow(container, mapItem(item)));
 }
 
 // A section (Grain Bill, Water/Minerals, etc.) whose list is genuinely
 // absent from the file is hidden entirely, rather than showing an empty
-// labeled box with nothing under it.
-function renderRecipeSection(sectionEl, listEl, items, formatDetail) {
+// labeled box with nothing under it. `totalEl`/`totalFn` are optional -
+// when given, totalFn(items) fills in the small total next to the section
+// title (e.g. "5.15 kg" of grain), matching Brewfather's own summary
+// style; sections with no natural single total (Mash Steps, Yeast, ...)
+// just omit them.
+function renderRecipeSection(sectionEl, listEl, items, mapItem, totalEl, totalFn) {
   const list = items || [];
-  if (list.length === 0) {
+  // totalFn can carry independent content (e.g. Equipment's profile name,
+  // Mash/Fermentation Profile's name) that exists even when the row list
+  // itself is empty - hiding the section whenever the list was empty,
+  // regardless of totalFn, would have dropped that content. Only hide when
+  // BOTH are empty.
+  const totalText = totalFn ? totalFn(list) : '';
+  if (list.length === 0 && !totalText) {
     sectionEl.style.display = 'none';
     return;
   }
   sectionEl.style.display = '';
-  renderRecipeList(listEl, list, formatDetail);
+  renderIngredientList(listEl, list, mapItem);
+  if (totalEl) totalEl.textContent = totalText;
+}
+
+function totalKg(items, field) {
+  const sum = items.reduce((acc, i) => acc + (i[field] || 0), 0);
+  return sum > 0 ? sum.toFixed(2) + ' kg' : '';
+}
+
+function totalG(items, field) {
+  const sum = items.reduce((acc, i) => acc + (i[field] || 0), 0);
+  return sum > 0 ? Math.round(sum) + ' g' : '';
+}
+
+// ── Exact per-section field mapping (see recipe-display-exact-mapping-
+// spec.md) - verified against a real Brewfather-exported BeerXML file
+// compared side-by-side with Brewfather's own screen, not guessed. Each
+// function below cites which part of that spec it implements.
+
+// `!== null` alone is NOT enough to guard a .toFixed() call - a field
+// that simply isn't in the object at all (never assigned by
+// mapBrewfatherRecipe(), or absent from an older saved-recipe JSON from
+// before this field existed) is `undefined`, and `undefined !== null` is
+// true in JS. That gap caused a real crash: mapMashStepRow() read
+// s.infuse_amount_l (a field only parseBeerXml() ever sets) on both a
+// live Brewfather import and an older saved recipe, threw mid-render, and
+// silently aborted the rest of showRecipePreview() - which looked like
+// "nothing happens" on screen, not an error. isNum() is the fix used
+// everywhere below instead of a bare `!== null` check.
+function isNum(v) {
+  return typeof v === 'number' && !isNaN(v);
+}
+
+// Fermentables: "{AMOUNT}kg  {NAME} {SUPPLIER}   {%}" then "{TYPE}
+// {COLOR} SRM". % is amount / sum(all amounts) * 100 - computed here
+// client-side, not a file field.
+function mapFermentableRow(f, totalKgSum) {
+  const pct = totalKgSum > 0 && isNum(f.amount_kg) ? (f.amount_kg / totalKgSum * 100).toFixed(1) + '%' : '';
+  const nameWithSupplier = f.name + (f.supplier ? ' ' + f.supplier : '');
+  const detail = (f.type || '') + (isNum(f.color) ? (f.type ? ' ' : '') + f.color.toFixed(1) + ' SRM' : '');
+  return {
+    amt: isNum(f.amount_kg) ? f.amount_kg.toFixed(2) + ' kg' : '',
+    name: nameWithSupplier,
+    val: pct,
+    detail: detail,
+  };
+}
+
+// Misc: "{DISPLAY_AMOUNT}  {NAME}" then "{TYPE}"; right side is
+// "{TIME} min" over "{USE}" when TIME>0, or just "{USE}" alone (no time
+// line) when TIME=0 or absent.
+function mapMiscRow(m) {
+  const hasTime = isNum(m.time_min) && m.time_min > 0;
+  return {
+    amt: m.display_amount || '',
+    name: m.name,
+    val: hasTime ? m.time_min.toFixed(0) + ' min' : (m.use || ''),
+    detailLeft: m.type || '',
+    detailRight: hasTime ? (m.use || '') : '',
+  };
+}
+
+// Yeast: bold primary "{DISPLAY_AMOUNT} {LABORATORY} {PRODUCT_ID}
+// {ATTENUATION}%", dim secondary "{NAME}" - the real yeast name is
+// deliberately the SECONDARY line, matching Brewfather's own display.
+function mapYeastRow(y) {
+  return {
+    amt: y.display_amount || '',
+    name: (y.laboratory || '') + (y.product_id ? ' ' + y.product_id : ''),
+    val: isNum(y.attenuation) ? y.attenuation.toFixed(0) + '%' : '',
+    detail: y.name || '',
+  };
+}
+
+// Mash step: "{NAME} | {STEP_TEMP}°C | {STEP_TIME} min" plus, when the
+// step has an INFUSE_AMOUNT, the sentence "Mash in with {L} L @ {TEMP}°C".
+function mapMashStepRow(s) {
+  return {
+    amt: isNum(s.temp_c) ? s.temp_c.toFixed(0) + '°C' : '',
+    name: s.name,
+    val: isNum(s.time_min) ? s.time_min.toFixed(0) + ' min' : '',
+    detail: isNum(s.infuse_amount_l) && isNum(s.temp_c)
+      ? 'Mash in with ' + s.infuse_amount_l.toFixed(2) + ' L @ ' + s.temp_c.toFixed(0) + '°C'
+      : '',
+  };
+}
+
+// Hops: g/L is AMOUNT(g) / BATCH_SIZE. Display depends on USE:
+// - Boil: "{TIME} min" over "Boil" (or whatever USE actually says)
+// - Aroma with a TEMPERATURE (hopstand): name becomes "{NAME} {ALPHA}%
+//   hopstand @ {TEMP}°C", "{TIME} min" over "Aroma"
+// - Dry Hop: TIME (minutes) -> days (TIME/1440), "day {N}" over "Dry Hop"
+function mapHopRow(h, batchSizeL) {
+  const gPerL = batchSizeL > 0 && isNum(h.amount_g) ? (h.amount_g / batchSizeL).toFixed(2) + ' g/L' : '';
+  const use = h.use || '';
+  if (use === 'Dry Hop') {
+    const days = isNum(h.time_min) ? Math.round(h.time_min / 1440) : null;
+    return { amt: gPerL, name: h.name, val: days !== null ? 'day ' + days : '', detailLeft: '', detailRight: use };
+  }
+  if (use === 'Aroma' && isNum(h.temperature_c)) {
+    const name = h.name + (isNum(h.alpha) ? ' ' + h.alpha + '%' : '') + ' hopstand @ ' + h.temperature_c.toFixed(0) + '°C';
+    return { amt: gPerL, name: name, val: isNum(h.time_min) ? h.time_min.toFixed(0) + ' min' : '', detailLeft: '', detailRight: use };
+  }
+  return { amt: gPerL, name: h.name, val: isNum(h.time_min) ? h.time_min.toFixed(0) + ' min' : '', detailLeft: '', detailRight: use || 'Boil' };
 }
 
 // Also used when a recipe is loaded from storage (see loadRecipeFile()) -
@@ -1754,37 +2137,127 @@ function showRecipePreview(recipe, mode) {
     importRecipeHeadingEl.textContent = 'Import Recipe';
     importSaveRowEl.style.display = '';
   }
-  recipeNameEl.textContent = recipe.name || 'Untitled Recipe';
+  // Title is "{NAME} — {ABV}%" per the exact-mapping spec - the style name
+  // still gets its own line below unchanged, this is specifically about
+  // the title itself.
+  const abvForTitle = isNum(recipe.abv) ? recipe.abv.toFixed(1) + '%' : '';
+  recipeNameEl.textContent = (recipe.name || 'Untitled Recipe') + (abvForTitle ? ' — ' + abvForTitle : '');
   recipeStyleEl.textContent = recipe.style || '';
   recipeStyleEl.style.display = recipe.style ? '' : 'none';
-  recipeOgEl.textContent = recipe.og !== null ? recipe.og.toFixed(3) : '--';
-  recipeIbuEl.textContent = recipe.ibu !== null ? Math.round(recipe.ibu) : '--';
-  recipeAbvEl.textContent = recipe.abv !== null ? recipe.abv.toFixed(1) + '%' : '--';
+  // thumb is a self-contained base64 data URI already in the recipe JSON
+  // (Brewfather only) - no fetch happens here at all. Hidden entirely,
+  // not a broken-image icon, when absent (every BeerXML import).
+  if (recipe.thumb) {
+    recipeThumbEl.src = recipe.thumb;
+    recipeThumbEl.classList.add('visible');
+  } else {
+    recipeThumbEl.removeAttribute('src');
+    recipeThumbEl.classList.remove('visible');
+  }
+  const metaParts = [];
+  if (recipe.author) metaParts.push(recipe.author);
+  if (recipe.recipe_type) metaParts.push(recipe.recipe_type);
+  recipeMetaEl.textContent = metaParts.join(' · ');
+  recipeMetaEl.style.display = metaParts.length > 0 ? '' : 'none';
+  recipeOgEl.textContent = isNum(recipe.og) ? recipe.og.toFixed(3) : '--';
+  recipeFgEl.textContent = isNum(recipe.fg) ? recipe.fg.toFixed(3) : '--';
+  recipeIbuEl.textContent = isNum(recipe.ibu) ? Math.round(recipe.ibu) : '--';
+  recipeAbvEl.textContent = abvForTitle || '--';
   // A missing field is null - show a placeholder for just that value,
   // never drop the whole row over one empty field (a MASH_STEP or HOP
   // with a missing time/temp is common in real-world exports, not a
   // reason to hide the ingredient entirely). Everything the file has is
-  // shown here, not just a subset - grain bill, yeast, water/minerals and
-  // other additions included, same as mash/hops always were.
+  // shown here, not just a subset - fermentables, yeast, water/minerals
+  // and other additions included, same as mash/hops always were.
+  // Equipment: the profile name (e.g. "Grainfather") lives in the section
+  // header's total slot - the same one Fermentables uses for "(5.15 kg)" -
+  // not as its own list row, matching the reference screenshot. Each
+  // remaining row is hidden individually when its field is absent (not
+  // shown as "N/A" or 0); the whole section hides only when the header
+  // name AND every row are absent (renderRecipeSection() treats totalFn's
+  // content as independent of the row list for exactly this reason - the
+  // equipment name can exist with no numeric fields at all, or vice versa).
+  // Mash Efficiency has no BeerXML equivalent (only one EFFICIENCY tag
+  // exists there) - mash_efficiency_pct is simply never set on that path,
+  // so this row hides itself for every BeerXML import, per spec.
+  const equipmentRows = [];
+  if (isNum(recipe.batch_size_l)) equipmentRows.push({ amt: '', name: 'Batch Volume', val: recipe.batch_size_l.toFixed(1) + ' L' });
+  if (isNum(recipe.boil_time_min)) equipmentRows.push({ amt: '', name: 'Boil Time', val: recipe.boil_time_min.toFixed(0) + ' min' });
+  if (isNum(recipe.boil_size_l)) equipmentRows.push({ amt: '', name: 'Pre-Boil Volume', val: recipe.boil_size_l.toFixed(1) + ' L' });
+  if (isNum(recipe.efficiency_pct)) equipmentRows.push({ amt: '', name: 'Brewhouse Efficiency', val: recipe.efficiency_pct.toFixed(1) + '%' });
+  if (isNum(recipe.mash_efficiency_pct)) equipmentRows.push({ amt: '', name: 'Mash Efficiency', val: recipe.mash_efficiency_pct.toFixed(1) + '%' });
+  renderRecipeSection(sectionEquipmentEl, recipeEquipmentListEl, equipmentRows, (r) => r,
+    sectionEquipmentTotalEl, () => recipe.equipment_name || '');
+
+  const fermTotalKg = (recipe.fermentables || []).reduce((acc, f) => acc + (f.amount_kg || 0), 0);
   renderRecipeSection(sectionFermentablesEl, recipeFermentablesListEl, recipe.fermentables,
-    (f) => (f.amount_kg !== null ? f.amount_kg.toFixed(2) + ' kg' : '--') + ' / ' +
-           (f.color !== null ? f.color.toFixed(0) + 'L' : '--'));
-  renderRecipeSection(sectionMashEl, recipeMashListEl, recipe.mash_steps,
-    (s) => (s.temp_c !== null ? s.temp_c.toFixed(0) + '°C' : '--') + ' / ' +
-           (s.time_min !== null ? s.time_min.toFixed(0) + ' min' : '--'));
+    (f) => mapFermentableRow(f, fermTotalKg),
+    sectionFermentablesTotalEl, (items) => totalKg(items, 'amount_kg'));
+
+  // Mash Profile: steps first, then Apparent Attenuation as its own row -
+  // it's a computed relationship between OG/FG, not a per-step value, but
+  // the spec files it under "Mash" so it lives in this section's list.
+  // Deliberately NOT chasing Brewfather's own displayed number exactly -
+  // Brewfather uses internal OG/FG precision this rounded XML doesn't
+  // have, so ours will be close but not identical, which is expected.
+  const mashRows = (recipe.mash_steps || []).map(mapMashStepRow);
+  if (isNum(recipe.og) && isNum(recipe.fg) && recipe.og !== 1) {
+    const attenuation = (recipe.og - recipe.fg) / (recipe.og - 1) * 100;
+    mashRows.push({ amt: '', name: 'Apparent Attenuation', val: attenuation.toFixed(1) + '%' });
+  }
+  renderRecipeSection(sectionMashEl, recipeMashListEl, mashRows, (r) => r,
+    sectionMashTotalEl, () => recipe.mash_name || '');
+
+  // Fermentation Profile: one row per stage that actually has data, plus
+  // a Carbonation row (CARBONATION volumes -> g/L is *1.96, a unit
+  // conversion, not a guess).
+  const fermentationRows = (recipe.fermentation_stages || []).map((s) => ({
+    amt: isNum(s.temp_c) ? s.temp_c.toFixed(0) + '°C' : '',
+    name: s.name,
+    val: isNum(s.age_days) ? s.age_days.toFixed(0) + ' days' : '',
+  }));
+  if (isNum(recipe.carbonation_vols)) {
+    fermentationRows.push({
+      amt: '', name: 'Carbonation',
+      val: (recipe.carbonation_vols * 1.96).toFixed(1) + ' g/L CO2',
+      detail: recipe.carbonation_vols.toFixed(1) + ' volumes',
+    });
+  }
+  renderRecipeSection(sectionFermentationEl, recipeFermentationListEl, fermentationRows, (r) => r,
+    sectionFermentationTotalEl, () => recipe.fermentation_profile_name || '');
+
   renderRecipeSection(sectionHopsEl, recipeHopsListEl, recipe.hops,
-    (h) => (h.amount_g !== null ? h.amount_g.toFixed(0) + 'g' : '--') + ' @ ' +
-           (h.time_min !== null ? h.time_min.toFixed(0) + ' min' : '--'));
-  renderRecipeSection(sectionYeastEl, recipeYeastListEl, recipe.yeasts,
-    (y) => y.form || '--');
+    (h) => mapHopRow(h, recipe.batch_size_l),
+    sectionHopsTotalEl, (items) => totalG(items, 'amount_g'));
+  renderRecipeSection(sectionYeastEl, recipeYeastListEl, recipe.yeasts, mapYeastRow);
   renderRecipeSection(sectionWaterEl, recipeWaterListEl, recipe.waters,
-    (w) => w.amount !== null ? w.amount.toFixed(1) + ' L' : '--');
-  renderRecipeSection(sectionMiscEl, recipeMiscListEl, recipe.miscs,
-    (m) => (m.amount !== null ? m.amount.toFixed(2) : '--') +
-           (m.use ? ' (' + m.use + ')' : '') +
-           (m.time_min !== null ? ' @ ' + m.time_min.toFixed(0) + ' min' : ''));
+    (w) => ({ amt: '', name: w.name, val: isNum(w.amount) ? w.amount.toFixed(1) + ' L' : '' }));
+  renderRecipeSection(sectionMiscEl, recipeMiscListEl, recipe.miscs, mapMiscRow);
+
+  // Style range: plain numbers, not the slider/gauge graphic real
+  // Brewfather uses (explicitly out of scope) - one row per metric that
+  // has both a file-provided range AND a value from this recipe to
+  // compare it against, so "your recipe" is always a real number too.
+  const ranges = recipe.style_ranges;
+  const styleRangeRows = [];
+  if (ranges) {
+    if (isNum(ranges.og_min) && isNum(ranges.og_max)) {
+      styleRangeRows.push({ amt: '', name: 'OG', val: ranges.og_min.toFixed(3) + ' - ' + ranges.og_max.toFixed(3), detail: isNum(recipe.og) ? 'Your recipe: ' + recipe.og.toFixed(3) : '' });
+    }
+    if (isNum(ranges.fg_min) && isNum(ranges.fg_max)) {
+      styleRangeRows.push({ amt: '', name: 'FG', val: ranges.fg_min.toFixed(3) + ' - ' + ranges.fg_max.toFixed(3), detail: isNum(recipe.fg) ? 'Your recipe: ' + recipe.fg.toFixed(3) : '' });
+    }
+    if (isNum(ranges.ibu_min) && isNum(ranges.ibu_max)) {
+      styleRangeRows.push({ amt: '', name: 'IBU', val: ranges.ibu_min.toFixed(0) + ' - ' + ranges.ibu_max.toFixed(0), detail: isNum(recipe.ibu) ? 'Your recipe: ' + Math.round(recipe.ibu) : '' });
+    }
+    if (isNum(ranges.color_min) && isNum(ranges.color_max)) {
+      styleRangeRows.push({ amt: '', name: 'Color', val: ranges.color_min.toFixed(0) + ' - ' + ranges.color_max.toFixed(0) + ' SRM', detail: '' });
+    }
+  }
+  renderRecipeSection(sectionStyleRangeEl, recipeStyleRangeListEl, styleRangeRows, (r) => r);
+
   renderRecipeSection(sectionAllFieldsEl, recipeAllFieldsListEl, recipe.all_fields,
-    (f) => f.value);
+    (f) => ({ amt: '', name: f.name, val: f.value }));
   importPickerEl.classList.add('hidden');
   importResultEl.classList.add('visible');
   saveStatusEl.textContent = '';
@@ -2025,6 +2498,263 @@ function stopWifiConnection() {
     .catch(() => {});
 }
 
+// ── Brewfather (step 3, see brewfather-api-spec.md) ──
+// This browser is only ever on the ESP32's own AP with no internet access
+// at all - the ESP32 itself (over its STA connection) is the one that
+// calls Brewfather's HTTPS API and does the JSON parsing (see main.cpp's
+// brewfatherTask). This UI only triggers a fetch job and polls for its
+// result - the same request/poll split for both the recipe list and a
+// single recipe's detail, since an HTTPS round trip isn't something the
+// device can just answer directly inside one request like everything else
+// on this page so far.
+function enterBrewfather() {
+  menuEl.classList.remove('visible');
+  fetch('/brewfather_settings')
+    .then((res) => res.json())
+    .then((data) => {
+      if (data.configured) {
+        showBrewfatherList();
+      } else {
+        enterBrewfatherSettings();
+      }
+    })
+    .catch(() => enterBrewfatherSettings());
+}
+
+function enterBrewfatherSettings() {
+  brewfatherListEl.classList.remove('visible');
+  brewfatherSettingsEl.classList.add('visible');
+  brewfatherUseridInput.value = '';
+  brewfatherApikeyInput.value = '';
+  brewfatherSettingsStatusEl.textContent = '';
+  brewfatherSettingsStatusEl.classList.remove('error');
+}
+
+function exitBrewfatherSettings() {
+  brewfatherSettingsEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+}
+
+function saveBrewfatherSettings() {
+  const userId = brewfatherUseridInput.value.trim();
+  const apiKey = brewfatherApikeyInput.value;
+  if (!userId || !apiKey) {
+    brewfatherSettingsStatusEl.classList.add('error');
+    brewfatherSettingsStatusEl.textContent = 'User ID and API Key are both required.';
+    return;
+  }
+  brewfatherSettingsStatusEl.classList.remove('error');
+  brewfatherSettingsStatusEl.textContent = 'Saving...';
+  const body = 'user_id=' + encodeURIComponent(userId) + '&api_key=' + encodeURIComponent(apiKey);
+  fetch('/brewfather_settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: body,
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      showBrewfatherList();
+    })
+    .catch(() => {
+      brewfatherSettingsStatusEl.classList.add('error');
+      brewfatherSettingsStatusEl.textContent = 'Could not save settings.';
+    });
+}
+
+function showBrewfatherList() {
+  brewfatherSettingsEl.classList.remove('visible');
+  brewfatherListEl.classList.add('visible');
+  brewfatherListItemsEl.innerHTML = '';
+  brewfatherListStatusEl.classList.remove('error');
+  brewfatherListStatusEl.style.display = '';
+  brewfatherListStatusEl.textContent = 'Loading recipes...';
+  fetch('/brewfather_fetch_list', { method: 'POST' })
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      pollBrewfatherStatus(
+        (result) => {
+          const items = result || [];
+          if (items.length === 0) {
+            brewfatherListStatusEl.textContent = 'No recipes found.';
+            return;
+          }
+          brewfatherListStatusEl.style.display = 'none';
+          items.forEach((item) => {
+            const row = document.createElement('div');
+            row.className = 'recipe-row clickable';
+            const name = document.createElement('div');
+            name.className = 'recipe-row-name';
+            name.textContent = item.name || '(unnamed)';
+            row.appendChild(name);
+            row.onclick = () => loadBrewfatherRecipe(item.id);
+            brewfatherListItemsEl.appendChild(row);
+          });
+        },
+        (errorMsg) => {
+          brewfatherListStatusEl.classList.add('error');
+          brewfatherListStatusEl.textContent = errorMsg;
+        }
+      );
+    })
+    .catch(() => {
+      brewfatherListStatusEl.classList.add('error');
+      brewfatherListStatusEl.textContent = 'Could not reach the device.';
+    });
+}
+
+function exitBrewfatherList() {
+  brewfatherListEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+}
+
+// Reuses the exact same generic display as a BeerXML import or a loaded
+// recipe (showRecipePreview) - mode 'import' since saving a Brewfather
+// recipe into local storage is exactly like saving a freshly-imported one.
+function loadBrewfatherRecipe(id) {
+  brewfatherListStatusEl.classList.remove('error');
+  brewfatherListStatusEl.style.display = '';
+  brewfatherListStatusEl.textContent = 'Fetching recipe...';
+  fetch('/brewfather_fetch_recipe?id=' + encodeURIComponent(id), { method: 'POST' })
+    .then((res) => {
+      if (!res.ok) throw new Error();
+      pollBrewfatherStatus(
+        (raw) => {
+          brewfatherListEl.classList.remove('visible');
+          importRecipeEl.classList.add('visible');
+          showRecipePreview(mapBrewfatherRecipe(raw), 'import');
+        },
+        (errorMsg) => {
+          brewfatherListStatusEl.classList.add('error');
+          brewfatherListStatusEl.textContent = errorMsg;
+        }
+      );
+    })
+    .catch(() => {
+      brewfatherListStatusEl.classList.add('error');
+      brewfatherListStatusEl.textContent = 'Could not reach the device.';
+    });
+}
+
+function pollBrewfatherStatus(onDone, onError) {
+  const poll = () => {
+    fetch('/brewfather_status')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.busy) {
+          setTimeout(poll, 1000);
+        } else if (data.error) {
+          onError(data.error);
+        } else {
+          onDone(data.result);
+        }
+      })
+      .catch(() => onError('Could not reach the device.'));
+  };
+  poll();
+}
+
+// ── Brewfather recipe mapping (JSON) ──
+// Mirrors collectAllFields() below exactly, but walks a JSON object tree
+// instead of an XML DOM. main.cpp's fetchBrewfatherRecipeDetail() passes
+// Brewfather's recipe JSON straight through with NO field-by-field
+// re-mapping in C++ first - an earlier version did that hand-mapping and
+// it silently dropped everything outside the few fields it picked
+// (timing, water, other ingredients, notes), which is exactly the class
+// of bug already hit once with BeerXML. The fix is the same fix: a full
+// recursive walk here in the browser instead of a fixed field list
+// anywhere.
+const BREWFATHER_HANDLED_KEYS = [
+  'name', 'thumb', 'og', 'fg', 'ibu', 'abv', 'mash', 'hops',
+  'author', 'type', 'equipment', 'batchSize', 'boilTime', 'boilSize', 'efficiency', 'mashEfficiency',
+];
+
+function jsonLeafToText(v) {
+  if (v === null || v === undefined || typeof v === 'object') return '';
+  return String(v);
+}
+
+// Recursively walks every leaf value under `obj` (anything that isn't
+// itself an object/array) and records it as {name: <path>, value: <text>}.
+// An array item is disambiguated by its own "name" field when it has one,
+// otherwise a 1-based index - same approach collectAllFields() takes for
+// repeated XML siblings. `handledKeys` is only applied at the top level of
+// an object (mirroring HANDLED_GROUP_TAGS below), since Brewfather's own
+// nested objects don't reuse those key names.
+function collectAllFieldsFromJson(obj, path, out, handledKeys) {
+  if (obj === null || obj === undefined) return;
+  if (Array.isArray(obj)) {
+    obj.forEach((item, i) => {
+      const itemName = (item && typeof item === 'object' && item.name) ? item.name : null;
+      const segment = itemName ? '#' + (i + 1) + ' (' + itemName + ')' : '#' + (i + 1);
+      const childPath = path ? path + ' / ' + segment : segment;
+      if (item !== null && typeof item === 'object') {
+        collectAllFieldsFromJson(item, childPath, out, []);
+      } else {
+        const text = jsonLeafToText(item);
+        if (text !== '') out.push({ name: childPath, value: text });
+      }
+    });
+    return;
+  }
+  if (typeof obj === 'object') {
+    Object.keys(obj).forEach((key) => {
+      if ((handledKeys || []).includes(key)) return;
+      const value = obj[key];
+      const childPath = path ? path + ' / ' + key : key;
+      if (value !== null && typeof value === 'object') {
+        collectAllFieldsFromJson(value, childPath, out, []);
+      } else {
+        const text = jsonLeafToText(value);
+        if (text !== '') out.push({ name: childPath, value: text });
+      }
+    });
+  }
+}
+
+// Maps Brewfather's real recipe JSON onto the exact same canonical shape
+// showRecipePreview() already renders for BeerXML imports and saved
+// recipes - mash_steps/hops get their own nicely-formatted sections (like
+// FERMENTABLES/HOPS/etc. do for BeerXML), everything else Brewfather
+// returns falls through to all_fields so nothing is silently missing.
+function numOrNull(v) {
+  return typeof v === 'number' ? v : null;
+}
+
+function mapBrewfatherRecipe(raw) {
+  const mashSteps = ((raw.mash && raw.mash.steps) || []).map((s) => ({
+    name: s.name || '',
+    temp_c: numOrNull(s.stepTemp),
+    time_min: numOrNull(s.stepTime),
+  }));
+  const hops = (raw.hops || []).map((h) => ({
+    name: h.name || '',
+    amount_g: numOrNull(h.amount),
+    time_min: numOrNull(h.time),
+  }));
+  const allFields = [];
+  collectAllFieldsFromJson(raw, '', allFields, BREWFATHER_HANDLED_KEYS);
+  return {
+    name: raw.name || 'Untitled Recipe',
+    thumb: raw.thumb || '',
+    author: raw.author || '',
+    recipe_type: raw.type || '',
+    style: (raw.style && raw.style.name) || '',
+    og: numOrNull(raw.og),
+    fg: numOrNull(raw.fg),
+    ibu: numOrNull(raw.ibu),
+    abv: numOrNull(raw.abv),
+    batch_size_l: numOrNull(raw.batchSize),
+    equipment_name: (raw.equipment && raw.equipment.name) || '',
+    boil_time_min: numOrNull(raw.boilTime),
+    boil_size_l: numOrNull(raw.boilSize),
+    efficiency_pct: numOrNull(raw.efficiency),
+    mash_efficiency_pct: numOrNull(raw.mashEfficiency),
+    mash_steps: mashSteps,
+    hops: hops,
+    all_fields: allFields,
+  };
+}
+
 // ── BeerXML parsing (DOMParser) ──
 // getElementsByTagName searches the WHOLE subtree of the element it's
 // called on (not just direct children), so "find this tag anywhere in
@@ -2115,49 +2845,130 @@ function parseBeerXml(xmlText) {
     return { error: 'Could not parse this file.' };
   }
 
+  // Field set verified directly against a real Brewfather-exported BeerXML
+  // file compared side-by-side with Brewfather's own recipe screen (see
+  // recipe-display-exact-mapping-spec.md) - not guessed. SUPPLIER/TYPE
+  // added for the "amount  name supplier   %" row Brewfather actually
+  // shows; ORIGIN deliberately left out - Brewfather's own display doesn't
+  // show it either.
   const fermentables = Array.from(recipeEl.getElementsByTagName('FERMENTABLE')).map((fEl) => ({
     name: tagText(fEl, 'NAME'),
+    supplier: tagText(fEl, 'SUPPLIER'),
+    type: tagText(fEl, 'TYPE'),
     amount_kg: tagFloat(fEl, 'AMOUNT'),
     color: tagFloat(fEl, 'COLOR'),
   }));
 
+  // INFUSE_AMOUNT feeds both the "Mash in with X L @ Y°C" line and the
+  // Water section's mash-water row (see below) - there is no <WATERS>
+  // block in every file, but this value always exists on a real mash step.
   const mashSteps = Array.from(recipeEl.getElementsByTagName('MASH_STEP')).map((stepEl) => ({
     name: tagText(stepEl, 'NAME'),
     temp_c: tagFloat(stepEl, 'STEP_TEMP'),
     time_min: tagFloat(stepEl, 'STEP_TIME'),
+    infuse_amount_l: tagFloat(stepEl, 'INFUSE_AMOUNT'),
   }));
 
+  // USE/ALPHA/TEMPERATURE drive the Boil vs. Aroma-hopstand vs. Dry Hop
+  // display differences (see mapHopRow()) - these are genuinely different
+  // presentations for the same three fields, not three different sections.
   const hops = Array.from(recipeEl.getElementsByTagName('HOP')).map((hopEl) => {
     const amountKg = tagFloat(hopEl, 'AMOUNT');
     return {
       name: tagText(hopEl, 'NAME'),
       amount_g: amountKg !== null ? amountKg * 1000 : null,
       time_min: tagFloat(hopEl, 'TIME'),
+      use: tagText(hopEl, 'USE'),
+      alpha: tagFloat(hopEl, 'ALPHA'),
+      temperature_c: tagFloat(hopEl, 'TEMPERATURE'),
     };
   });
 
+  // DISPLAY_AMOUNT is already formatted correctly in the file itself
+  // ("1.68 g", "1 items", "1 tsp") - used as-is, not recomputed from the
+  // raw AMOUNT + AMOUNT_IS_WEIGHT (that would just be re-deriving what's
+  // already given).
   const miscs = Array.from(recipeEl.getElementsByTagName('MISC')).map((miscEl) => ({
     name: tagText(miscEl, 'NAME'),
-    amount: tagFloat(miscEl, 'AMOUNT'),
+    type: tagText(miscEl, 'TYPE'),
+    display_amount: tagText(miscEl, 'DISPLAY_AMOUNT'),
     use: tagText(miscEl, 'USE'),
     time_min: tagFloat(miscEl, 'TIME'),
   }));
 
+  // Real <WATER> profile entries (rare - most exports have none) plus a
+  // synthetic "Mash Water" row derived from the mash step's own
+  // INFUSE_AMOUNT, which every mash step has - this is a real value from
+  // the file, not a fabricated one. Sparge/total water, mash volume etc.
+  // need a full brewing-calculation model (grain absorption, deadspace,
+  // evaporation) this recipe object doesn't have - deliberately not
+  // computed or guessed at.
   const waters = Array.from(recipeEl.getElementsByTagName('WATER')).map((waterEl) => ({
     name: tagText(waterEl, 'NAME'),
     amount: tagFloat(waterEl, 'AMOUNT'),
   }));
+  mashSteps.forEach((s) => {
+    if (s.infuse_amount_l !== null) {
+      waters.push({ name: 'Mash Water', amount: s.infuse_amount_l });
+    }
+  });
 
+  // LABORATORY/PRODUCT_ID/ATTENUATION/DISPLAY_AMOUNT feed the bold primary
+  // line ("1 pkg Fermentis US-05 80%"); the yeast's own NAME (e.g. "Safale
+  // American") is deliberately the DIM secondary line, matching what
+  // Brewfather's own display does - not a mistake to "fix".
   const yeasts = Array.from(recipeEl.getElementsByTagName('YEAST')).map((yEl) => ({
     name: tagText(yEl, 'NAME'),
-    form: tagText(yEl, 'FORM'),
+    laboratory: tagText(yEl, 'LABORATORY'),
+    product_id: tagText(yEl, 'PRODUCT_ID'),
+    attenuation: tagFloat(yEl, 'ATTENUATION'),
+    display_amount: tagText(yEl, 'DISPLAY_AMOUNT'),
   }));
 
-  // <STYLE> is a single nested element, not a list - its own <NAME> has to
-  // be scoped to the STYLE element specifically, or tagText(recipeEl,
-  // 'NAME') would just find the recipe's own name again first.
+  // <STYLE> is a single nested element, not a list - its own <NAME> (and
+  // the OG/FG/IBU/COLOR range fields) have to be scoped to the STYLE
+  // element specifically, or tagText(recipeEl, 'NAME') would just find the
+  // recipe's own name again first. Shown as plain "min - max" text per the
+  // spec - not the slider/gauge graphic real Brewfather uses.
   const styleEl = recipeEl.getElementsByTagName('STYLE')[0];
   const styleName = styleEl ? tagText(styleEl, 'NAME') : '';
+  const styleRanges = styleEl ? {
+    og_min: tagFloat(styleEl, 'OG_MIN'), og_max: tagFloat(styleEl, 'OG_MAX'),
+    fg_min: tagFloat(styleEl, 'FG_MIN'), fg_max: tagFloat(styleEl, 'FG_MAX'),
+    ibu_min: tagFloat(styleEl, 'IBU_MIN'), ibu_max: tagFloat(styleEl, 'IBU_MAX'),
+    color_min: tagFloat(styleEl, 'COLOR_MIN'), color_max: tagFloat(styleEl, 'COLOR_MAX'),
+  } : null;
+
+  // <MASH>'s own NAME ("High fermentability") comes before <MASH_STEPS> in
+  // document order, so this - like the STYLE NAME lookup above - finds the
+  // mash profile's own name rather than a nested step's.
+  const mashEl = recipeEl.getElementsByTagName('MASH')[0];
+  const mashName = mashEl ? tagText(mashEl, 'NAME') : '';
+
+  // Equipment - only the name comes from the <EQUIPMENT> block itself
+  // (scoped, same reasoning as STYLE/MASH above). BOIL_TIME/BOIL_SIZE/
+  // EFFICIENCY appear as RECIPE-level tags BEFORE <EQUIPMENT> in document
+  // order in real exports (confirmed against a real Brewfather-exported
+  // file), so reading them from recipeEl finds those, not any duplicate
+  // inside EQUIPMENT - consistent with how BATCH_SIZE was already read.
+  // BeerXML has no separate mash-efficiency tag (only one EFFICIENCY) -
+  // mash_efficiency_pct is left unset here on purpose, so its row hides.
+  const equipmentEl = recipeEl.getElementsByTagName('EQUIPMENT')[0];
+  const equipmentName = equipmentEl ? tagText(equipmentEl, 'NAME') : '';
+
+  // Fermentation stages: BeerXML defines up to three (Primary/Secondary/
+  // Tertiary), each an independent TEMP/AGE pair - only the stages that
+  // actually have data are shown (this file only has Primary).
+  const fermentationStages = [];
+  if (tagFloat(recipeEl, 'PRIMARY_AGE') !== null || tagFloat(recipeEl, 'PRIMARY_TEMP') !== null) {
+    fermentationStages.push({ name: 'Primary', temp_c: tagFloat(recipeEl, 'PRIMARY_TEMP'), age_days: tagFloat(recipeEl, 'PRIMARY_AGE') });
+  }
+  if (tagFloat(recipeEl, 'SECONDARY_AGE') !== null || tagFloat(recipeEl, 'SECONDARY_TEMP') !== null) {
+    fermentationStages.push({ name: 'Secondary', temp_c: tagFloat(recipeEl, 'SECONDARY_TEMP'), age_days: tagFloat(recipeEl, 'SECONDARY_AGE') });
+  }
+  if (tagFloat(recipeEl, 'TERTIARY_AGE') !== null || tagFloat(recipeEl, 'TERTIARY_TEMP') !== null) {
+    fermentationStages.push({ name: 'Tertiary', temp_c: tagFloat(recipeEl, 'TERTIARY_TEMP'), age_days: tagFloat(recipeEl, 'TERTIARY_AGE') });
+  }
 
   // Everything else in the file, whatever it turns out to be - see
   // collectAllFields()'s own comment for why this is a full recursive
@@ -2167,10 +2978,24 @@ function parseBeerXml(xmlText) {
 
   return {
     name: tagText(recipeEl, 'NAME'),
+    author: tagText(recipeEl, 'BREWER'),
+    recipe_type: tagText(recipeEl, 'TYPE'),
     style: styleName,
+    style_ranges: styleRanges,
     og: tagFloatWithFallback(recipeEl, 'OG', 'EST_OG'),
+    fg: tagFloatWithFallback(recipeEl, 'FG', 'EST_FG'),
     ibu: tagFloat(recipeEl, 'IBU'),
     abv: tagFloatWithFallback(recipeEl, 'ABV', 'EST_ABV'),
+    batch_size_l: tagFloat(recipeEl, 'BATCH_SIZE'),
+    equipment_name: equipmentName,
+    boil_time_min: tagFloat(recipeEl, 'BOIL_TIME'),
+    boil_size_l: tagFloat(recipeEl, 'BOIL_SIZE'),
+    efficiency_pct: tagFloat(recipeEl, 'EFFICIENCY'),
+    mash_efficiency_pct: null,
+    mash_name: mashName,
+    fermentation_profile_name: tagText(recipeEl, 'BF_FERMENTATION_PROFILE_NAME'),
+    fermentation_stages: fermentationStages,
+    carbonation_vols: tagFloat(recipeEl, 'CARBONATION'),
     fermentables: fermentables,
     mash_steps: mashSteps,
     hops: hops,
@@ -5546,15 +6371,23 @@ void handleListRecipes() {
 
 void handleLoadRecipe() {
   String filename = server.arg("filename");
+  Serial.print("[load-recipe] requested \"");
+  Serial.print(filename);
+  Serial.println("\"");
   if (!isValidRecipeFilename(filename)) {
+    Serial.println("[load-recipe] rejected: invalid filename");
     server.send(400, "application/json", "{\"error\":\"Invalid filename.\"}");
     return;
   }
   File f = SPIFFS.open("/" + filename, FILE_READ);
   if (!f) {
+    Serial.println("[load-recipe] not found on SPIFFS");
     server.send(404, "application/json", "{\"error\":\"Recipe not found.\"}");
     return;
   }
+  Serial.print("[load-recipe] streaming ");
+  Serial.print(f.size());
+  Serial.println(" bytes");
   server.streamFile(f, "application/json");
   f.close();
 }
@@ -5948,6 +6781,361 @@ void handleStopWifi() {
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
+// ── Brewfather integration (step 3, see brewfather-api-spec.md) ──
+// Unlike BeerXML import, the browser here is on the ESP32's own AP with NO
+// internet access at all - only the ESP32 itself, over its STA connection,
+// can reach the internet. So the ESP32 (not the browser) makes the HTTPS
+// call to Brewfather and does the JSON parsing, then hands the browser the
+// same canonical recipe JSON already used by Import/Save/Load.
+#define BREWFATHER_SETTINGS_FILE "/brewfather_settings.txt"
+
+// GTS Root R1 (Google Trust Services), cross-signed by GlobalSign Root CA -
+// confirmed by directly inspecting api.brewfather.app's real TLS chain
+// with openssl s_client (leaf -> WR3 intermediate -> this root), NOT
+// assumed from documentation - the original assumption of ISRG Root X1
+// (Let's Encrypt) was WRONG: api.brewfather.app sits behind a Fastly/CDN
+// edge whose actual certificate chains through Google Trust Services.
+// Pinned explicitly rather than WiFiClientSecure::setInsecure(), which
+// would accept literally any certificate and defeat the point of HTTPS
+// for a request carrying the user's Brewfather API key. Known fragility:
+// if Brewfather's CDN/CA ever changes, this pin needs updating - a
+// one-line swap, but worth knowing about (the alternative, a full
+// pre-built trusted-CA bundle via setCACertBundle(), needs a separate
+// generated binary asset embedded at build time and was judged more than
+// this spec asked for).
+const char *BREWFATHER_ROOT_CA = R"EOF(
+-----BEGIN CERTIFICATE-----
+MIIFYjCCBEqgAwIBAgIQd70NbNs2+RrqIQ/E8FjTDTANBgkqhkiG9w0BAQsFADBX
+MQswCQYDVQQGEwJCRTEZMBcGA1UEChMQR2xvYmFsU2lnbiBudi1zYTEQMA4GA1UE
+CxMHUm9vdCBDQTEbMBkGA1UEAxMSR2xvYmFsU2lnbiBSb290IENBMB4XDTIwMDYx
+OTAwMDA0MloXDTI4MDEyODAwMDA0MlowRzELMAkGA1UEBhMCVVMxIjAgBgNVBAoT
+GUdvb2dsZSBUcnVzdCBTZXJ2aWNlcyBMTEMxFDASBgNVBAMTC0dUUyBSb290IFIx
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAthECix7joXebO9y/lD63
+ladAPKH9gvl9MgaCcfb2jH/76Nu8ai6Xl6OMS/kr9rH5zoQdsfnFl97vufKj6bwS
+iV6nqlKr+CMny6SxnGPb15l+8Ape62im9MZaRw1NEDPjTrETo8gYbEvs/AmQ351k
+KSUjB6G00j0uYODP0gmHu81I8E3CwnqIiru6z1kZ1q+PsAewnjHxgsHA3y6mbWwZ
+DrXYfiYaRQM9sHmklCitD38m5agI/pboPGiUU+6DOogrFZYJsuB6jC511pzrp1Zk
+j5ZPaK49l8KEj8C8QMALXL32h7M1bKwYUH+E4EzNktMg6TO8UpmvMrUpsyUqtEj5
+cuHKZPfmghCN6J3Cioj6OGaK/GP5Afl4/Xtcd/p2h/rs37EOeZVXtL0m79YB0esW
+CruOC7XFxYpVq9Os6pFLKcwZpDIlTirxZUTQAs6qzkm06p98g7BAe+dDq6dso499
+iYH6TKX/1Y7DzkvgtdizjkXPdsDtQCv9Uw+wp9U7DbGKogPeMa3Md+pvez7W35Ei
+Eua++tgy/BBjFFFy3l3WFpO9KWgz7zpm7AeKJt8T11dleCfeXkkUAKIAf5qoIbap
+sZWwpbkNFhHax2xIPEDgfg1azVY80ZcFuctL7TlLnMQ/0lUTbiSw1nH69MG6zO0b
+9f6BQdgAmD06yK56mDcYBZUCAwEAAaOCATgwggE0MA4GA1UdDwEB/wQEAwIBhjAP
+BgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBTkrysmcRorSCeFL1JmLO/wiRNxPjAf
+BgNVHSMEGDAWgBRge2YaRQ2XyolQL30EzTSo//z9SzBgBggrBgEFBQcBAQRUMFIw
+JQYIKwYBBQUHMAGGGWh0dHA6Ly9vY3NwLnBraS5nb29nL2dzcjEwKQYIKwYBBQUH
+MAKGHWh0dHA6Ly9wa2kuZ29vZy9nc3IxL2dzcjEuY3J0MDIGA1UdHwQrMCkwJ6Al
+oCOGIWh0dHA6Ly9jcmwucGtpLmdvb2cvZ3NyMS9nc3IxLmNybDA7BgNVHSAENDAy
+MAgGBmeBDAECATAIBgZngQwBAgIwDQYLKwYBBAHWeQIFAwIwDQYLKwYBBAHWeQIF
+AwMwDQYJKoZIhvcNAQELBQADggEBADSkHrEoo9C0dhemMXoh6dFSPsjbdBZBiLg9
+NR3t5P+T4Vxfq7vqfM/b5A3Ri1fyJm9bvhdGaJQ3b2t6yMAYN/olUazsaL+yyEn9
+WprKASOshIArAoyZl+tJaox118fessmXn1hIVw41oeQa1v1vg4Fv74zPl6/AhSrw
+9U5pCZEt4Wi4wStz6dTZ/CLANx8LZh1J7QJVj2fhMtfTJr9w4z30Z209fOU0iOMy
++qduBmpvvYuR7hZL6Dupszfnw0Skfths18dG9ZKb59UhvmaSGZRVbNQpsg3BZlvi
+d0lIKO2d1xozclOzgjXPYovJJIultzkMu34qQb9Sz/yilrbCgj8=
+-----END CERTIFICATE-----
+)EOF";
+
+// Single line, tab-separated like /wifi_networks.txt - the ESP32 needs
+// structured read/write here too, and a hand-rolled format again avoids
+// pulling in a JSON library just for this (ArduinoJson is only added here
+// for talking to Brewfather's actual API responses).
+bool loadBrewfatherSettings(String &userId, String &apiKey) {
+  File f = SPIFFS.open(BREWFATHER_SETTINGS_FILE, FILE_READ);
+  if (!f) return false;
+  String line = f.readStringUntil('\n');
+  f.close();
+  if (line.length() > 0 && line.charAt(line.length() - 1) == '\r') {
+    line.remove(line.length() - 1);
+  }
+  int tabIdx = line.indexOf('\t');
+  if (tabIdx < 0) return false;
+  userId = line.substring(0, tabIdx);
+  apiKey = line.substring(tabIdx + 1);
+  return userId.length() > 0 && apiKey.length() > 0;
+}
+
+bool saveBrewfatherSettings(const String &userId, const String &apiKey) {
+  File f = SPIFFS.open(BREWFATHER_SETTINGS_FILE, FILE_WRITE);
+  if (!f) return false;
+  f.print(userId);
+  f.print('\t');
+  f.print(apiKey);
+  f.print('\n');
+  f.close();
+  return true;
+}
+
+// ── Async fetch job ──
+// An HTTPS request + JSON parse can take multiple seconds - doing that
+// inside an HTTP handler (which runs on server.handleClient(), on the same
+// core/loop as the WebSocket and sensor reads) would starve them exactly
+// like the blocking sensor reads once starved the WebSocket handshake (see
+// pumpNetwork()). So this runs on its own FreeRTOS task, pinned to the
+// other core (see brewfatherTask()/setup()) - the main loop's core is
+// never touched by it at all, not even briefly.
+//
+// Only one job is ever in flight, so plain shared globals are used instead
+// of a mutex - same accepted-risk pattern as sharedLine0/sharedLine1 for
+// the LCD. The HTTP handler sets brewfatherBusy=true BEFORE handing off a
+// request, and only reads brewfatherResultJson/brewfatherError AFTER
+// observing brewfatherBusy==false; the task only writes those two AND THEN
+// clears brewfatherBusy as its last step. That ordering is what makes this
+// safe without a lock, not the volatile qualifier alone.
+volatile bool brewfatherBusy = false;
+volatile bool brewfatherRequestPending = false;
+int brewfatherRequestType = 0; // 1 = recipe list, 2 = one recipe's detail
+String brewfatherRequestId = "";
+String brewfatherResultJson = "";
+String brewfatherError = "";
+
+bool brewfatherHttpsGet(const String &path, String &responseBody, String &errorOut) {
+  String userId, apiKey;
+  if (!loadBrewfatherSettings(userId, apiKey)) {
+    errorOut = "Brewfather is not configured.";
+    return false;
+  }
+  WiFiClientSecure client;
+  client.setCACert(BREWFATHER_ROOT_CA);
+  HTTPClient https;
+  String url = "https://api.brewfather.app" + path;
+  if (!https.begin(client, url)) {
+    errorOut = "Could not start the request.";
+    return false;
+  }
+  https.setTimeout(15000);
+  https.addHeader("Authorization", "Basic " + base64::encode(userId + ":" + apiKey));
+  Serial.print("[brewfather] GET ");
+  Serial.print(path);
+  Serial.println(" ...");
+  unsigned long t0 = millis();
+  int code = https.GET();
+  Serial.print("[brewfather] HTTP ");
+  Serial.print(code);
+  Serial.print(" after ");
+  Serial.print(millis() - t0);
+  Serial.println("ms");
+  bool ok = false;
+  if (code == 200) {
+    responseBody = https.getString();
+    Serial.print("[brewfather] response body length: ");
+    Serial.println(responseBody.length());
+    ok = true;
+  } else if (code == 401) {
+    errorOut = "Brewfather rejected the User ID/API Key.";
+  } else if (code == 429) {
+    errorOut = "Brewfather's rate limit was reached - try again later.";
+  } else if (code > 0) {
+    errorOut = "Brewfather returned HTTP " + String(code);
+  } else {
+    errorOut = "Network error: " + https.errorToString(code);
+    Serial.print("[brewfather] errorToString: ");
+    Serial.println(https.errorToString(code));
+  }
+  https.end();
+  return ok;
+}
+
+// Only the lightweight {id, name} pair per recipe - the list screen never
+// needs a full recipe, only what's picked from it (see
+// fetchBrewfatherRecipeDetail()).
+bool fetchBrewfatherRecipeList() {
+  String body, err;
+  if (!brewfatherHttpsGet("/v2/recipes?limit=50", body, err)) {
+    brewfatherError = err;
+    return false;
+  }
+  JsonDocument inDoc;
+  DeserializationError parseErr = deserializeJson(inDoc, body);
+  if (parseErr) {
+    brewfatherError = "Could not parse Brewfather's response.";
+    Serial.print("[brewfather] list JSON parse error: ");
+    Serial.println(parseErr.c_str());
+    return false;
+  }
+  JsonDocument outDoc;
+  JsonArray outArr = outDoc.to<JsonArray>();
+  for (JsonObject item : inDoc.as<JsonArray>()) {
+    JsonObject entry = outArr.add<JsonObject>();
+    entry["id"] = item["_id"].as<String>();
+    entry["name"] = item["name"].as<String>();
+  }
+  brewfatherResultJson = "";
+  serializeJson(outDoc, brewfatherResultJson);
+  Serial.print("[brewfather] list ok, ");
+  Serial.print(outArr.size());
+  Serial.println(" recipes");
+  return true;
+}
+
+// Passes Brewfather's recipe JSON straight through to the browser,
+// essentially unchanged - deliberately NOT hand-mapping individual fields
+// into a fixed schema here. An earlier version of this function did
+// exactly that (picking out name/og/ibu/abv/mash/hops one by one) and it
+// silently dropped everything else Brewfather actually returns - timing,
+// water, other ingredients, notes - because nobody had added them to the
+// list. That is the exact same class of bug already hit once with
+// BeerXML, and the fix there was the same fix as here: let the browser
+// walk the WHOLE tree generically (see collectAllFields() in ys-boot.html
+// for the BeerXML/XML version, mapBrewfatherRecipe()/
+// collectAllFieldsFromJson() for this JSON version) instead of trusting a
+// hand-picked field list on this end. The ESP32's only job is fetching
+// the JSON and confirming it's well-formed before forwarding it - not
+// deciding which of its fields matter.
+bool fetchBrewfatherRecipeDetail(const String &id) {
+  String body, err;
+  if (!brewfatherHttpsGet("/v2/recipes/" + id, body, err)) {
+    brewfatherError = err;
+    return false;
+  }
+  JsonDocument doc;
+  DeserializationError parseErr = deserializeJson(doc, body);
+  if (parseErr) {
+    brewfatherError = "Could not parse Brewfather's response.";
+    Serial.print("[brewfather] recipe JSON parse error: ");
+    Serial.println(parseErr.c_str());
+    return false;
+  }
+  brewfatherResultJson = body;
+  Serial.print("[brewfather] recipe detail ok: \"");
+  Serial.print(doc["name"].as<String>());
+  Serial.print("\" (");
+  Serial.print(body.length());
+  Serial.print(" bytes, passed through as-is, free heap: ");
+  Serial.print(ESP.getFreeHeap());
+  Serial.println(")");
+  return true;
+}
+
+void brewfatherTask(void *param) {
+  for (;;) {
+    if (brewfatherRequestPending) {
+      int type = brewfatherRequestType;
+      String id = brewfatherRequestId;
+      brewfatherRequestPending = false;
+      brewfatherError = "";
+      if (type == 1) {
+        fetchBrewfatherRecipeList();
+      } else if (type == 2) {
+        fetchBrewfatherRecipeDetail(id);
+      }
+      brewfatherBusy = false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(200));
+  }
+}
+
+void handleBrewfatherSettingsGet() {
+  String userId, apiKey;
+  bool configured = loadBrewfatherSettings(userId, apiKey);
+  JsonDocument doc;
+  doc["configured"] = configured;
+  doc["user_id"] = configured ? userId : "";
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+void handleBrewfatherSettingsSave() {
+  String userId = server.arg("user_id");
+  String apiKey = server.arg("api_key");
+  if (userId.length() == 0 || userId.length() > 64 ||
+      userId.indexOf('\t') != -1 || userId.indexOf('\n') != -1 || userId.indexOf('\r') != -1) {
+    server.send(400, "application/json", "{\"error\":\"Invalid User ID.\"}");
+    return;
+  }
+  if (apiKey.length() == 0 || apiKey.length() > 128 ||
+      apiKey.indexOf('\t') != -1 || apiKey.indexOf('\n') != -1 || apiKey.indexOf('\r') != -1) {
+    server.send(400, "application/json", "{\"error\":\"Invalid API Key.\"}");
+    return;
+  }
+  if (!saveBrewfatherSettings(userId, apiKey)) {
+    server.send(500, "application/json", "{\"error\":\"Could not save settings.\"}");
+    return;
+  }
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleBrewfatherFetchList() {
+  if (brewfatherBusy) {
+    server.send(409, "application/json", "{\"error\":\"A request is already in progress.\"}");
+    return;
+  }
+  String userId, apiKey;
+  if (!loadBrewfatherSettings(userId, apiKey)) {
+    server.send(400, "application/json", "{\"error\":\"Brewfather is not configured.\"}");
+    return;
+  }
+  brewfatherBusy = true;
+  brewfatherRequestType = 1;
+  brewfatherRequestId = "";
+  brewfatherRequestPending = true;
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleBrewfatherFetchRecipe() {
+  if (brewfatherBusy) {
+    server.send(409, "application/json", "{\"error\":\"A request is already in progress.\"}");
+    return;
+  }
+  String id = server.arg("id");
+  if (id.length() == 0 || id.length() > 64) {
+    server.send(400, "application/json", "{\"error\":\"Invalid recipe id.\"}");
+    return;
+  }
+  String userId, apiKey;
+  if (!loadBrewfatherSettings(userId, apiKey)) {
+    server.send(400, "application/json", "{\"error\":\"Brewfather is not configured.\"}");
+    return;
+  }
+  brewfatherBusy = true;
+  brewfatherRequestType = 2;
+  brewfatherRequestId = id;
+  brewfatherRequestPending = true;
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleBrewfatherStatus() {
+  if (brewfatherBusy) {
+    server.send(200, "application/json", "{\"busy\":true,\"error\":null,\"result\":null}");
+    return;
+  }
+  if (brewfatherError.length() > 0) {
+    JsonDocument doc;
+    doc["busy"] = false;
+    doc["error"] = brewfatherError;
+    doc["result"] = nullptr;
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+    return;
+  }
+  if (brewfatherResultJson.length() > 0) {
+    // Streamed in three pieces instead of building one combined String via
+    // serialized() - a real Brewfather recipe's full JSON (water/
+    // nutrition/equipment included) can be tens of KB, and building
+    // {"busy":...,"result":<that whole thing again>} as a second String
+    // needs a SECOND same-size contiguous heap block on top of the first
+    // (brewfatherResultJson itself, already alive). On an ESP32, heap
+    // fragmentation after TLS/WiFi activity makes a ~2x-sized contiguous
+    // allocation a real risk - and Arduino's String fails SILENTLY on
+    // allocation failure (no exception, no error, just corrupted/
+    // truncated content), which would look exactly like "nothing happens"
+    // on the phone with no evidence anywhere of what went wrong. This
+    // streams the existing string directly instead of ever duplicating it.
+    Serial.print("[brewfather] serving status result, free heap: ");
+    Serial.println(ESP.getFreeHeap());
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "application/json", "");
+    server.sendContent("{\"busy\":false,\"error\":null,\"result\":");
+    server.sendContent(brewfatherResultJson);
+    server.sendContent("}");
+    return;
+  }
+  server.send(200, "application/json", "{\"busy\":false,\"error\":null,\"result\":null}");
+}
+
 void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length) {
   switch (type) {
     case WStype_CONNECTED: {
@@ -6209,6 +7397,13 @@ void setup() {
 
   Serial.println("2x PT100 + LCD + SSR1 (P32, Manual/CLEAN on/off control)");
 
+  // Own task, own core - an HTTPS call + JSON parse must never run on the
+  // same core/loop as server.handleClient()/webSocket.loop() (see the
+  // brewfatherTask() comment for why). 12KB stack: mbedTLS's handshake is
+  // stack-hungry and this task doesn't share loopTask's larger default.
+  xTaskCreatePinnedToCore(brewfatherTask, "brewfatherTask", 12288, NULL, 1, NULL, 0);
+  Serial.println("[boot] brewfatherTask started on core 0");
+
   // WiFi + boot sensor check - see the block above readTemp()/formatSensor()
   // for the reasoning. Runs after everything else in setup() so a WiFi
   // issue can never delay arming the watchdog or starting lcdTask.
@@ -6271,6 +7466,11 @@ void setup() {
   server.on("/add_wifi", HTTP_POST, handleAddWifi);
   server.on("/delete_wifi", HTTP_POST, handleDeleteWifi);
   server.on("/stop_wifi", HTTP_POST, handleStopWifi);
+  server.on("/brewfather_settings", HTTP_GET, handleBrewfatherSettingsGet);
+  server.on("/brewfather_settings", HTTP_POST, handleBrewfatherSettingsSave);
+  server.on("/brewfather_fetch_list", HTTP_POST, handleBrewfatherFetchList);
+  server.on("/brewfather_fetch_recipe", HTTP_POST, handleBrewfatherFetchRecipe);
+  server.on("/brewfather_status", HTTP_GET, handleBrewfatherStatus);
   server.begin();
 
   webSocket.begin();
