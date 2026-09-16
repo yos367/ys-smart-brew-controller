@@ -907,6 +907,7 @@
         <div class="recipe-section-header">
           <span class="recipe-section-icon">📏</span>
           <span class="recipe-section-label">Style Range</span>
+          <span class="recipe-section-total" id="section-style-range-total"></span>
         </div>
         <div class="recipe-list" id="recipe-style-range-list"></div>
       </div>
@@ -1123,6 +1124,7 @@ const sectionFermentationTotalEl = document.getElementById('section-fermentation
 const recipeFermentationListEl = document.getElementById('recipe-fermentation-list');
 const sectionStyleRangeEl = document.getElementById('section-style-range');
 const recipeStyleRangeListEl = document.getElementById('recipe-style-range-list');
+const sectionStyleRangeTotalEl = document.getElementById('section-style-range-total');
 const sectionHopsEl = document.getElementById('section-hops');
 const sectionHopsTotalEl = document.getElementById('section-hops-total');
 const recipeHopsListEl = document.getElementById('recipe-hops-list');
@@ -1719,14 +1721,29 @@ function showRecipePreview(recipe, mode) {
     if (isNum(ranges.fg_min) && isNum(ranges.fg_max)) {
       styleRangeRows.push({ amt: '', name: 'FG', val: ranges.fg_min.toFixed(3) + ' - ' + ranges.fg_max.toFixed(3), detail: isNum(recipe.fg) ? 'Your recipe: ' + recipe.fg.toFixed(3) : '' });
     }
+    if (isNum(ranges.abv_min) && isNum(ranges.abv_max)) {
+      styleRangeRows.push({ amt: '', name: 'ABV', val: ranges.abv_min.toFixed(1) + ' - ' + ranges.abv_max.toFixed(1) + '%', detail: isNum(recipe.abv) ? 'Your recipe: ' + recipe.abv.toFixed(1) + '%' : '' });
+    }
     if (isNum(ranges.ibu_min) && isNum(ranges.ibu_max)) {
       styleRangeRows.push({ amt: '', name: 'IBU', val: ranges.ibu_min.toFixed(0) + ' - ' + ranges.ibu_max.toFixed(0), detail: isNum(recipe.ibu) ? 'Your recipe: ' + Math.round(recipe.ibu) : '' });
     }
     if (isNum(ranges.color_min) && isNum(ranges.color_max)) {
-      styleRangeRows.push({ amt: '', name: 'Color', val: ranges.color_min.toFixed(0) + ' - ' + ranges.color_max.toFixed(0) + ' SRM', detail: '' });
+      styleRangeRows.push({ amt: '', name: 'Color', val: ranges.color_min.toFixed(0) + ' - ' + ranges.color_max.toFixed(0) + ' SRM', detail: isNum(recipe.color) ? 'Your recipe: ' + recipe.color.toFixed(0) + ' SRM' : '' });
+    }
+    // BU:GU has no BeerXML equivalent tag at all, so ranges.bu_gu_min/max
+    // stay unset on that path and this row hides there via the same
+    // isNum() guard as every other not-in-the-file row. The "your recipe"
+    // side is simple arithmetic from numbers already parsed (ibu, og) -
+    // in scope per the display spec, unlike Brewfather's own more precise
+    // internal BU:GU/RBR calculation which is explicitly out of scope.
+    if (isNum(ranges.bu_gu_min) && isNum(ranges.bu_gu_max)) {
+      const buGu = (isNum(recipe.ibu) && isNum(recipe.og) && recipe.og > 1)
+        ? recipe.ibu / ((recipe.og - 1) * 1000) : null;
+      styleRangeRows.push({ amt: '', name: 'BU:GU', val: ranges.bu_gu_min.toFixed(2) + ' - ' + ranges.bu_gu_max.toFixed(2), detail: isNum(buGu) ? 'Your recipe: ' + buGu.toFixed(2) : '' });
     }
   }
-  renderRecipeSection(sectionStyleRangeEl, recipeStyleRangeListEl, styleRangeRows, (r) => r);
+  renderRecipeSection(sectionStyleRangeEl, recipeStyleRangeListEl, styleRangeRows, (r) => r,
+    sectionStyleRangeTotalEl, () => recipe.style_code || '');
 
   renderRecipeSection(sectionAllFieldsEl, recipeAllFieldsListEl, recipe.all_fields,
     (f) => ({ amt: '', name: f.name, val: f.value }));
@@ -2138,6 +2155,7 @@ function pollBrewfatherStatus(onDone, onError) {
 const BREWFATHER_HANDLED_KEYS = [
   'name', 'thumb', 'og', 'fg', 'ibu', 'abv', 'mash', 'hops',
   'author', 'type', 'equipment', 'batchSize', 'boilTime', 'boilSize', 'efficiency', 'mashEfficiency',
+  'style', 'color',
 ];
 
 function jsonLeafToText(v) {
@@ -2205,12 +2223,33 @@ function mapBrewfatherRecipe(raw) {
   }));
   const allFields = [];
   collectAllFieldsFromJson(raw, '', allFields, BREWFATHER_HANDLED_KEYS);
+  // raw.style also carries styleAbv/styleOg/styleFg/styleColor/styleIbu/
+  // styleBuGu - those are BOOLEAN conformity flags ("does this recipe fall
+  // inside its style's range?"), not range data themselves, despite the
+  // similar names - confirmed against a real captured API response. The
+  // real min/max numbers live on these separate *Min/*Max fields instead.
+  // categoryNumber+styleLetter forms the style "code" (e.g. "18B"), the
+  // same convention BeerXML's own CATEGORY_NUMBER/STYLE_LETTER tags use.
+  const style = raw.style || {};
+  const styleRanges = raw.style ? {
+    og_min: numOrNull(style.ogMin), og_max: numOrNull(style.ogMax),
+    fg_min: numOrNull(style.fgMin), fg_max: numOrNull(style.fgMax),
+    ibu_min: numOrNull(style.ibuMin), ibu_max: numOrNull(style.ibuMax),
+    color_min: numOrNull(style.colorMin), color_max: numOrNull(style.colorMax),
+    abv_min: numOrNull(style.abvMin), abv_max: numOrNull(style.abvMax),
+    bu_gu_min: numOrNull(style.buGuMin), bu_gu_max: numOrNull(style.buGuMax),
+  } : null;
+  const styleCode = (style.categoryNumber || style.styleLetter)
+    ? ((style.categoryNumber || '') + (style.styleLetter || '')) : '';
   return {
     name: raw.name || 'Untitled Recipe',
     thumb: raw.thumb || '',
     author: raw.author || '',
     recipe_type: raw.type || '',
-    style: (raw.style && raw.style.name) || '',
+    style: style.name || '',
+    style_ranges: styleRanges,
+    style_code: styleCode,
+    color: numOrNull(raw.color),
     og: numOrNull(raw.og),
     fg: numOrNull(raw.fg),
     ibu: numOrNull(raw.ibu),
@@ -2409,7 +2448,16 @@ function parseBeerXml(xmlText) {
     fg_min: tagFloat(styleEl, 'FG_MIN'), fg_max: tagFloat(styleEl, 'FG_MAX'),
     ibu_min: tagFloat(styleEl, 'IBU_MIN'), ibu_max: tagFloat(styleEl, 'IBU_MAX'),
     color_min: tagFloat(styleEl, 'COLOR_MIN'), color_max: tagFloat(styleEl, 'COLOR_MAX'),
+    abv_min: tagFloat(styleEl, 'ABV_MIN'), abv_max: tagFloat(styleEl, 'ABV_MAX'),
+    // BeerXML has no BU:GU range fields at all - bu_gu_min/max are left
+    // unset here on purpose, so that row hides for every BeerXML import
+    // (it's Brewfather-only, see mapBrewfatherRecipe).
   } : null;
+  // Style "code" (e.g. "19B") is two separate BeerXML tags glued together,
+  // same convention Brewfather itself uses on its own recipe pages.
+  const styleCategoryNumber = styleEl ? tagText(styleEl, 'CATEGORY_NUMBER') : '';
+  const styleLetter = styleEl ? tagText(styleEl, 'STYLE_LETTER') : '';
+  const styleCode = (styleCategoryNumber || styleLetter) ? (styleCategoryNumber + styleLetter) : '';
 
   // <MASH>'s own NAME ("High fermentability") comes before <MASH_STEPS> in
   // document order, so this - like the STYLE NAME lookup above - finds the
@@ -2454,6 +2502,8 @@ function parseBeerXml(xmlText) {
     recipe_type: tagText(recipeEl, 'TYPE'),
     style: styleName,
     style_ranges: styleRanges,
+    style_code: styleCode,
+    color: tagFloat(recipeEl, 'EST_COLOR'),
     og: tagFloatWithFallback(recipeEl, 'OG', 'EST_OG'),
     fg: tagFloatWithFallback(recipeEl, 'FG', 'EST_FG'),
     ibu: tagFloat(recipeEl, 'IBU'),
