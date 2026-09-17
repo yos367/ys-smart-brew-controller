@@ -1539,10 +1539,15 @@ function computeBuGu(recipe) {
 // Used only as a fallback when the recipe has no Brewfather-supplied value
 // for it (see the Hops footer below).
 function sumHopPerLiter(hops, use, batchSizeL) {
+  // null only means "can't compute" (no batch size to divide by) - a
+  // recipe with hops but none of this `use` is a real, computable zero,
+  // not a missing value, so it must return 0 rather than null here or the
+  // isNum() guard at the call site would wrongly hide a genuine 0.00 g/L
+  // as if the stat didn't exist at all.
   if (!(batchSizeL > 0)) return null;
   const sumG = (hops || []).filter((h) => h.use === use)
     .reduce((acc, h) => acc + (isNum(h.amount_g) ? h.amount_g : 0), 0);
-  return sumG > 0 ? sumG / batchSizeL : null;
+  return sumG / batchSizeL;
 }
 
 // Fermentables: "{AMOUNT}kg  {NAME} {SUPPLIER}   {%}" then "{TYPE}
@@ -1712,9 +1717,24 @@ function showRecipePreview(recipe, mode) {
   // Brewfather uses internal OG/FG precision this rounded XML doesn't
   // have, so ours will be close but not identical, which is expected.
   const mashRows = (recipe.mash_steps || []).map(mapMashStepRow);
+  if (isNum(recipe.fg)) {
+    mashRows.push({ amt: '', name: 'Estimated Final Gravity', val: recipe.fg.toFixed(3) });
+  }
   if (isNum(recipe.og) && isNum(recipe.fg) && recipe.og !== 1) {
     const attenuation = (recipe.og - recipe.fg) / (recipe.og - 1) * 100;
     mashRows.push({ amt: '', name: 'Apparent Attenuation', val: attenuation.toFixed(1) + '%' });
+  }
+  if (isNum(recipe.abv)) {
+    mashRows.push({ amt: '', name: 'ABV', val: recipe.abv.toFixed(1) + '%' });
+  }
+  // Calories/carbs are Brewfather-only (raw.nutrition.calories.total /
+  // .carbs.total) - BeerXML has no equivalent tag, so these hide there
+  // via the same isNum() guard as every other not-in-the-file row.
+  if (isNum(recipe.calories_kcal)) {
+    mashRows.push({ amt: '', name: 'Calories', val: Math.round(recipe.calories_kcal) + ' kcal' });
+  }
+  if (isNum(recipe.carbs_g)) {
+    mashRows.push({ amt: '', name: 'Carbs', val: recipe.carbs_g.toFixed(1) + ' g' });
   }
   renderRecipeSection(sectionMashEl, recipeMashListEl, mashRows, (r) => r,
     sectionMashTotalEl, () => recipe.mash_name || '');
@@ -2224,11 +2244,19 @@ const BREWFATHER_HANDLED_KEYS = [
   'author', 'type', 'equipment', 'batchSize', 'boilTime', 'boilSize', 'efficiency', 'mashEfficiency',
   'style', 'color', 'fermentables', 'yeasts', 'miscs',
   'preBoilGravity', 'sumAromaHopPerLiter', 'sumDryHopPerLiter',
-  'hopStandMinutes', 'avgWeightedHopstandTemp', 'rbRatio',
+  'hopStandMinutes', 'avgWeightedHopstandTemp', 'rbRatio', 'carbonation',
   // buGuRatio is deliberately NOT listed here - we display our own
   // computeBuGu() value (reused from the Style Range row) instead of a
   // second, separately-sourced number, so Brewfather's own field is left
   // to fall through to All Other Fields like any other unhandled key.
+  //
+  // 'nutrition' is deliberately NOT listed here either, even though its
+  // calories.total/carbs.total leaves get their own Mash footer rows
+  // below - unlike carbonation (one scalar, fully consumed), nutrition
+  // also carries calories.alcohol/calories.carbs/calories.kJ that nothing
+  // displays. Excluding the whole key would silently drop those, the
+  // exact bug class this project keeps fixing - so the two leaves we do
+  // show duplicate into All Other Fields too rather than risk that.
 ];
 
 // Brewfather gives yeast/misc amounts as a separate {amount, unit} pair
@@ -2394,6 +2422,15 @@ function mapBrewfatherRecipe(raw) {
     hop_stand_minutes: numOrNull(raw.hopStandMinutes),
     avg_weighted_hopstand_temp_c: numOrNull(raw.avgWeightedHopstandTemp),
     rb_ratio: numOrNull(raw.rbRatio),
+    // Confirmed against Brewfather's own API docs (docs.brewfather.app/
+    // api/types): `carbonation` is stored in volumes of CO2 regardless of
+    // the account's own display-unit preference (a separate `defaults.
+    // carbonation` field, which only affects Brewfather's own UI) - same
+    // unit as BeerXML's CARBONATION tag, so this reuses carbonation_vols
+    // and the *1.96 conversion already built for that path unchanged.
+    carbonation_vols: numOrNull(raw.carbonation),
+    calories_kcal: numOrNull(raw.nutrition && raw.nutrition.calories && raw.nutrition.calories.total),
+    carbs_g: numOrNull(raw.nutrition && raw.nutrition.carbs && raw.nutrition.carbs.total),
     all_fields: allFields,
   };
 }
