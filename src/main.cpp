@@ -2050,6 +2050,29 @@ function isNum(v) {
   return typeof v === 'number' && !isNaN(v);
 }
 
+// BU:GU (bitterness-to-gravity ratio) is simple arithmetic from numbers
+// already parsed on both paths - in scope per the display spec, unlike
+// Brewfather's own more precise internal BU:GU/RBR math (explicitly out
+// of scope). Shared by the Style Range row and the Hops footer stat so
+// the two never drift apart into two slightly different formulas.
+function computeBuGu(recipe) {
+  return (isNum(recipe.ibu) && isNum(recipe.og) && recipe.og > 1)
+    ? recipe.ibu / ((recipe.og - 1) * 1000) : null;
+}
+
+// Aroma/Dry Hop g/L: Brewfather gives these pre-summed
+// (sumAromaHopPerLiter/sumDryHopPerLiter), but BeerXML has no equivalent
+// tag, so this recomputes the same thing from hops already parsed - sum
+// of amount_g for hops with a matching `use`, divided by batch volume.
+// Used only as a fallback when the recipe has no Brewfather-supplied value
+// for it (see the Hops footer below).
+function sumHopPerLiter(hops, use, batchSizeL) {
+  if (!(batchSizeL > 0)) return null;
+  const sumG = (hops || []).filter((h) => h.use === use)
+    .reduce((acc, h) => acc + (isNum(h.amount_g) ? h.amount_g : 0), 0);
+  return sumG > 0 ? sumG / batchSizeL : null;
+}
+
 // Fermentables: "{AMOUNT}kg  {NAME} {SUPPLIER}   {%}" then "{TYPE}
 // {COLOR} SRM". % is amount / sum(all amounts) * 100 - computed here
 // client-side, not a file field.
@@ -2192,9 +2215,23 @@ function showRecipePreview(recipe, mode) {
     sectionEquipmentTotalEl, () => recipe.equipment_name || '');
 
   const fermTotalKg = (recipe.fermentables || []).reduce((acc, f) => acc + (f.amount_kg || 0), 0);
-  renderRecipeSection(sectionFermentablesEl, recipeFermentablesListEl, recipe.fermentables,
-    (f) => mapFermentableRow(f, fermTotalKg),
-    sectionFermentablesTotalEl, (items) => totalKg(items, 'amount_kg'));
+  // Footer stats after the per-fermentable rows: Pre-Boil Gravity is a
+  // derived value Brewfather computes for us (no BeerXML equivalent tag,
+  // so it hides there); Original Gravity and Colour are just repeating
+  // fields already parsed on both paths, for at-a-glance context right
+  // next to the grain bill that produced them.
+  const fermentableRows = (recipe.fermentables || []).map((f) => mapFermentableRow(f, fermTotalKg));
+  if (isNum(recipe.pre_boil_gravity)) {
+    fermentableRows.push({ amt: '', name: 'Pre-Boil Gravity', val: recipe.pre_boil_gravity.toFixed(3) });
+  }
+  if (isNum(recipe.og)) {
+    fermentableRows.push({ amt: '', name: 'Original Gravity', val: recipe.og.toFixed(3) });
+  }
+  if (isNum(recipe.color)) {
+    fermentableRows.push({ amt: '', name: 'Color', val: recipe.color.toFixed(1) + ' SRM' });
+  }
+  renderRecipeSection(sectionFermentablesEl, recipeFermentablesListEl, fermentableRows, (r) => r,
+    sectionFermentablesTotalEl, () => totalKg(recipe.fermentables || [], 'amount_kg'));
 
   // Mash Profile: steps first, then Apparent Attenuation as its own row -
   // it's a computed relationship between OG/FG, not a per-step value, but
@@ -2228,9 +2265,40 @@ function showRecipePreview(recipe, mode) {
   renderRecipeSection(sectionFermentationEl, recipeFermentationListEl, fermentationRows, (r) => r,
     sectionFermentationTotalEl, () => recipe.fermentation_profile_name || '');
 
-  renderRecipeSection(sectionHopsEl, recipeHopsListEl, recipe.hops,
-    (h) => mapHopRow(h, recipe.batch_size_l),
-    sectionHopsTotalEl, (items) => totalG(items, 'amount_g'));
+  // Footer stats after the per-hop rows. Aroma/Dry Hop g/L and BU:GU use
+  // a Brewfather-supplied value when there is one, falling back to a
+  // simple client-side sum/ratio from fields already parsed when there
+  // isn't (BeerXML) - see sumHopPerLiter()/computeBuGu(). Hopstand and RBR
+  // have no such fallback: both are weighted-average/proprietary
+  // Brewfather calculations explicitly out of scope to reimplement, so
+  // they just hide on the BeerXML path via the same isNum() guard as
+  // every other not-in-the-file row.
+  const hopRows = (recipe.hops || []).map((h) => mapHopRow(h, recipe.batch_size_l));
+  const aromaGL = isNum(recipe.sum_aroma_hop_per_liter) ? recipe.sum_aroma_hop_per_liter
+    : sumHopPerLiter(recipe.hops, 'Aroma', recipe.batch_size_l);
+  if (isNum(aromaGL)) {
+    hopRows.push({ amt: '', name: 'Aroma Hops', val: aromaGL.toFixed(2) + ' g/L' });
+  }
+  const dryHopGL = isNum(recipe.sum_dry_hop_per_liter) ? recipe.sum_dry_hop_per_liter
+    : sumHopPerLiter(recipe.hops, 'Dry Hop', recipe.batch_size_l);
+  if (isNum(dryHopGL)) {
+    hopRows.push({ amt: '', name: 'Dry Hops', val: dryHopGL.toFixed(2) + ' g/L' });
+  }
+  if (isNum(recipe.hop_stand_minutes) && isNum(recipe.avg_weighted_hopstand_temp_c)) {
+    hopRows.push({ amt: '', name: 'Hopstand', val: recipe.hop_stand_minutes.toFixed(0) + ' min @ ' + recipe.avg_weighted_hopstand_temp_c.toFixed(0) + '°C' });
+  }
+  if (isNum(recipe.ibu)) {
+    hopRows.push({ amt: '', name: 'Total IBU', val: Math.round(recipe.ibu) });
+  }
+  const buGu = computeBuGu(recipe);
+  if (isNum(buGu)) {
+    hopRows.push({ amt: '', name: 'BU:GU', val: buGu.toFixed(2) });
+  }
+  if (isNum(recipe.rb_ratio)) {
+    hopRows.push({ amt: '', name: 'RBR', val: recipe.rb_ratio.toFixed(2) });
+  }
+  renderRecipeSection(sectionHopsEl, recipeHopsListEl, hopRows, (r) => r,
+    sectionHopsTotalEl, () => totalG(recipe.hops || [], 'amount_g'));
   renderRecipeSection(sectionYeastEl, recipeYeastListEl, recipe.yeasts, mapYeastRow);
   renderRecipeSection(sectionWaterEl, recipeWaterListEl, recipe.waters,
     (w) => ({ amt: '', name: w.name, val: isNum(w.amount) ? w.amount.toFixed(1) + ' L' : '' }));
@@ -2265,8 +2333,7 @@ function showRecipePreview(recipe, mode) {
     // in scope per the display spec, unlike Brewfather's own more precise
     // internal BU:GU/RBR calculation which is explicitly out of scope.
     if (isNum(ranges.bu_gu_min) && isNum(ranges.bu_gu_max)) {
-      const buGu = (isNum(recipe.ibu) && isNum(recipe.og) && recipe.og > 1)
-        ? recipe.ibu / ((recipe.og - 1) * 1000) : null;
+      const buGu = computeBuGu(recipe);
       styleRangeRows.push({ amt: '', name: 'BU:GU', val: ranges.bu_gu_min.toFixed(2) + ' - ' + ranges.bu_gu_max.toFixed(2), detail: isNum(buGu) ? 'Your recipe: ' + buGu.toFixed(2) : '' });
     }
   }
@@ -2684,6 +2751,12 @@ const BREWFATHER_HANDLED_KEYS = [
   'name', 'thumb', 'og', 'fg', 'ibu', 'abv', 'mash', 'hops',
   'author', 'type', 'equipment', 'batchSize', 'boilTime', 'boilSize', 'efficiency', 'mashEfficiency',
   'style', 'color', 'fermentables', 'yeasts', 'miscs',
+  'preBoilGravity', 'sumAromaHopPerLiter', 'sumDryHopPerLiter',
+  'hopStandMinutes', 'avgWeightedHopstandTemp', 'rbRatio',
+  // buGuRatio is deliberately NOT listed here - we display our own
+  // computeBuGu() value (reused from the Style Range row) instead of a
+  // second, separately-sourced number, so Brewfather's own field is left
+  // to fall through to All Other Fields like any other unhandled key.
 ];
 
 // Brewfather gives yeast/misc amounts as a separate {amount, unit} pair
@@ -2843,6 +2916,12 @@ function mapBrewfatherRecipe(raw) {
     fermentables: fermentables,
     yeasts: yeasts,
     miscs: miscs,
+    pre_boil_gravity: numOrNull(raw.preBoilGravity),
+    sum_aroma_hop_per_liter: numOrNull(raw.sumAromaHopPerLiter),
+    sum_dry_hop_per_liter: numOrNull(raw.sumDryHopPerLiter),
+    hop_stand_minutes: numOrNull(raw.hopStandMinutes),
+    avg_weighted_hopstand_temp_c: numOrNull(raw.avgWeightedHopstandTemp),
+    rb_ratio: numOrNull(raw.rbRatio),
     all_fields: allFields,
   };
 }
