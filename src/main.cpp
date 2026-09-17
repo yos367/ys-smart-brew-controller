@@ -2380,8 +2380,23 @@ function showRecipePreview(recipe, mode) {
   renderRecipeSection(sectionFermentationEl, recipeFermentationListEl, fermentationRows, (r) => r,
     sectionFermentationTotalEl, () => recipe.fermentation_profile_name || '');
 
-  renderRecipeSection(sectionWaterEl, recipeWaterListEl, recipe.waters,
-    (w) => ({ amt: '', name: w.name, val: isNum(w.amount) ? w.amount.toFixed(1) + ' L' : '' }));
+  // Named <WATER> entries (rare) plus BeerXML's synthetic "Mash Water"
+  // row come first, unchanged from before. The mineral/pH/volume rows
+  // after them are Brewfather-only - BeerXML has no equivalent tags for
+  // any of it, so every one of these hides individually via isNum() on
+  // that path, same as everywhere else.
+  const waterRows = (recipe.waters || []).map((w) => ({ amt: '', name: w.name, val: isNum(w.amount) ? w.amount.toFixed(1) + ' L' : '' }));
+  if (isNum(recipe.water_calcium)) waterRows.push({ amt: '', name: 'Calcium (Ca)', val: recipe.water_calcium.toFixed(0) + ' ppm' });
+  if (isNum(recipe.water_magnesium)) waterRows.push({ amt: '', name: 'Magnesium (Mg)', val: recipe.water_magnesium.toFixed(0) + ' ppm' });
+  if (isNum(recipe.water_sodium)) waterRows.push({ amt: '', name: 'Sodium (Na)', val: recipe.water_sodium.toFixed(0) + ' ppm' });
+  if (isNum(recipe.water_chloride)) waterRows.push({ amt: '', name: 'Chloride (Cl)', val: recipe.water_chloride.toFixed(0) + ' ppm' });
+  if (isNum(recipe.water_sulfate)) waterRows.push({ amt: '', name: 'Sulfate (SO4)', val: recipe.water_sulfate.toFixed(0) + ' ppm' });
+  if (isNum(recipe.water_bicarbonate)) waterRows.push({ amt: '', name: 'Bicarbonate (HCO3)', val: recipe.water_bicarbonate.toFixed(0) + ' ppm' });
+  if (isNum(recipe.mash_ph)) waterRows.push({ amt: '', name: 'Mash pH', val: recipe.mash_ph.toFixed(2) });
+  if (isNum(recipe.mash_water_l)) waterRows.push({ amt: '', name: 'Mash Water', val: recipe.mash_water_l.toFixed(1) + ' L' });
+  if (isNum(recipe.sparge_water_l)) waterRows.push({ amt: '', name: 'Sparge Water', val: recipe.sparge_water_l.toFixed(1) + ' L' });
+  if (isNum(recipe.total_water_l)) waterRows.push({ amt: '', name: 'Total Water', val: recipe.total_water_l.toFixed(1) + ' L' });
+  renderRecipeSection(sectionWaterEl, recipeWaterListEl, waterRows, (r) => r);
 
   renderRecipeSection(sectionAllFieldsEl, recipeAllFieldsListEl, recipe.all_fields,
     (f) => ({ amt: '', name: f.name, val: f.value }));
@@ -2819,6 +2834,13 @@ const BREWFATHER_HANDLED_KEYS = [
   // silently losing the other 11+. Surfacing rbrMin/Max etc. as their own
   // rows instead of just not-dropping them is a possible future pass, not
   // done here.
+  //
+  // 'water' and 'data' are the same story, more so: the Water/Minerals
+  // section below reads maybe 9 leaves total between them (six ions off
+  // water.total, mashPh, and three volumes off data.*), out of dozens each
+  // object actually carries (mashAdjustments, spargeAdjustments, settings,
+  // acids, mashFermentables, strikeTemp, mashVolume, ...). Both stay out
+  // of this list entirely so all of that keeps reaching All Other Fields.
 ];
 
 // Brewfather gives yeast/misc amounts as a separate {amount, unit} pair
@@ -2993,6 +3015,31 @@ function mapBrewfatherRecipe(raw) {
     carbonation_vols: numOrNull(raw.carbonation),
     calories_kcal: numOrNull(raw.nutrition && raw.nutrition.calories && raw.nutrition.calories.total),
     carbs_g: numOrNull(raw.nutrition && raw.nutrition.carbs && raw.nutrition.carbs.total),
+    // Water/mineral profile - Ca/Mg/Na/Cl/SO4/HCO3 + pH + sparge/total
+    // water, shown directly with no formula (this is what was explicitly
+    // asked for during the field-investigation pass). raw.water carries
+    // separate mash/sparge/source/total sub-profiles (all identical for a
+    // recipe with no water adjustments, like this sample, but not
+    // necessarily in general) - `total` is used here as the one
+    // representative number per ion, since it's the final combined
+    // profile regardless of how much adjustment happened. mashPh (the
+    // real calculated post-strike pH) is a different, more meaningful
+    // number than water.mash.ph (the raw source water's own pH before
+    // mashing) - confirmed against the real captured JSON, do not conflate
+    // the two. The volumes come from the separate top-level `data` object,
+    // not water.mashWaterAmount/spargeWaterAmount/totalWaterAmount, which
+    // were null in the real sample despite `data`'s own copies being
+    // populated.
+    water_calcium: numOrNull(raw.water && raw.water.total && raw.water.total.calcium),
+    water_magnesium: numOrNull(raw.water && raw.water.total && raw.water.total.magnesium),
+    water_sodium: numOrNull(raw.water && raw.water.total && raw.water.total.sodium),
+    water_chloride: numOrNull(raw.water && raw.water.total && raw.water.total.chloride),
+    water_sulfate: numOrNull(raw.water && raw.water.total && raw.water.total.sulfate),
+    water_bicarbonate: numOrNull(raw.water && raw.water.total && raw.water.total.bicarbonate),
+    mash_ph: numOrNull(raw.water && raw.water.mashPh),
+    mash_water_l: numOrNull(raw.data && raw.data.mashWaterAmount),
+    sparge_water_l: numOrNull(raw.data && raw.data.spargeWaterAmount),
+    total_water_l: numOrNull(raw.data && raw.data.totalWaterAmount),
     all_fields: allFields,
   };
 }
