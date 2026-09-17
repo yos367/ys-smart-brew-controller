@@ -2315,6 +2315,37 @@ const BREWFATHER_HANDLED_KEYS = [
   // of this list entirely so all of that keeps reaching All Other Fields.
 ];
 
+// Separate from BREWFATHER_HANDLED_KEYS above on purpose: those are real
+// recipe content already shown via a structured section, excluded here only
+// to avoid duplicating it in All Other Fields. Everything below is
+// Brewfather's own app/document housekeeping - never brewing content, not
+// shown anywhere, and never going to be - so it's fine to drop outright
+// rather than let it dilute a list a brewer might actually want to scan.
+// Reviewed field-by-field against a real captured recipe's actual All
+// Other Fields output before removing anything (see chat) - not a guess
+// at what Brewfather's schema probably contains.
+const BREWFATHER_IRRELEVANT_KEYS = [
+  // Document/version identifiers.
+  '_id', '_rev', '_versionId', '_versionNumber', '_version',
+  // Timestamps.
+  '_created', '_timestamp', '_timestamp_ms',
+  // Misc internal bookkeeping flags.
+  '_origin', '_init', '_ev', '_type', '_public',
+  // Brewfather UI/organization metadata (folder location, hidden-from-list
+  // flag) - not recipe data.
+  'path', 'folderRefs', 'hidden',
+  // The Brewfather ACCOUNT's own unit-display preferences (metric/SG/
+  // Tinseth/etc.) - a setting, not part of this recipe.
+  'defaults',
+  // Brewfather's own search index tags for this recipe - not recipe content.
+  'searchTags',
+  // carbonationStyle was considered and deliberately left OFF this list:
+  // its carbMin/carbMax aren't reachable anywhere else (style.carbMin/Max
+  // are null in the real sample checked, and style.carbonationStyle is
+  // only the code string "01D", not the range) - confirmed field-by-field
+  // before deciding to keep it, not assumed to be a duplicate.
+];
+
 // Brewfather gives yeast/misc amounts as a separate {amount, unit} pair
 // rather than BeerXML's own pre-formatted DISPLAY_AMOUNT string - this
 // just joins them the same way ("1 pkg", "15 g") so mapYeastRow/
@@ -2429,7 +2460,7 @@ function mapBrewfatherRecipe(raw) {
     display_amount: formatAmountUnit(m.amount, m.unit),
   }));
   const allFields = [];
-  collectAllFieldsFromJson(raw, '', allFields, BREWFATHER_HANDLED_KEYS);
+  collectAllFieldsFromJson(raw, '', allFields, BREWFATHER_HANDLED_KEYS.concat(BREWFATHER_IRRELEVANT_KEYS));
   // raw.style also carries styleAbv/styleOg/styleFg/styleColor/styleIbu/
   // styleBuGu - those are BOOLEAN conformity flags ("does this recipe fall
   // inside its style's range?"), not range data themselves, despite the
