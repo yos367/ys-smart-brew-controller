@@ -2683,8 +2683,17 @@ function pollBrewfatherStatus(onDone, onError) {
 const BREWFATHER_HANDLED_KEYS = [
   'name', 'thumb', 'og', 'fg', 'ibu', 'abv', 'mash', 'hops',
   'author', 'type', 'equipment', 'batchSize', 'boilTime', 'boilSize', 'efficiency', 'mashEfficiency',
-  'style', 'color',
+  'style', 'color', 'fermentables', 'yeasts', 'miscs',
 ];
+
+// Brewfather gives yeast/misc amounts as a separate {amount, unit} pair
+// rather than BeerXML's own pre-formatted DISPLAY_AMOUNT string - this
+// just joins them the same way ("1 pkg", "15 g") so mapYeastRow/
+// mapMiscRow (built for BeerXML's string) don't need a second code path.
+function formatAmountUnit(amount, unit) {
+  if (typeof amount !== 'number') return '';
+  return amount + (unit ? ' ' + unit : '');
+}
 
 function jsonLeafToText(v) {
   if (v === null || v === undefined || typeof v === 'object') return '';
@@ -2744,10 +2753,51 @@ function mapBrewfatherRecipe(raw) {
     temp_c: numOrNull(s.stepTemp),
     time_min: numOrNull(s.stepTime),
   }));
-  const hops = (raw.hops || []).map((h) => ({
-    name: h.name || '',
-    amount_g: numOrNull(h.amount),
-    time_min: numOrNull(h.time),
+  // use/alpha/temp are what let mapHopRow() tell Boil/Aroma-hopstand/Dry
+  // Hop apart - without them every hop fell into the generic Boil branch
+  // regardless of its real use, which is what left live Brewfather imports
+  // showing the same "Boil" line for aroma additions and dry hops.
+  //
+  // Dry Hop is a second trap: Brewfather's own `time` field switches units
+  // depending on `timeUnit` - Boil/Aroma give it in minutes like BeerXML
+  // always does, but a Dry Hop entry gives `time` already in DAYS (with
+  // timeUnit "day"), confirmed against the real captured JSON (time: 5,
+  // timeUnit: "day" - not 5 minutes). mapHopRow()'s Dry Hop branch expects
+  // minutes and divides by 1440 to get days (matching BeerXML, which has
+  // no separate day unit), so a Brewfather day-value has to be scaled back
+  // up to minutes here or it silently shows "day 0" for every dry hop.
+  const hops = (raw.hops || []).map((h) => {
+    const rawTime = numOrNull(h.time);
+    const timeMin = (h.timeUnit === 'day' && rawTime !== null) ? rawTime * 1440 : rawTime;
+    return {
+      name: h.name || '',
+      amount_g: numOrNull(h.amount),
+      time_min: timeMin,
+      use: h.use || '',
+      alpha: numOrNull(h.alpha),
+      temperature_c: numOrNull(h.temp),
+    };
+  });
+  const fermentables = (raw.fermentables || []).map((f) => ({
+    name: f.name || '',
+    supplier: f.supplier || '',
+    type: f.type || '',
+    amount_kg: numOrNull(f.amount),
+    color: numOrNull(f.color),
+  }));
+  const yeasts = (raw.yeasts || []).map((y) => ({
+    name: y.name || '',
+    laboratory: y.laboratory || '',
+    product_id: y.productId || '',
+    attenuation: numOrNull(y.attenuation),
+    display_amount: formatAmountUnit(y.amount, y.unit),
+  }));
+  const miscs = (raw.miscs || []).map((m) => ({
+    name: m.name || '',
+    type: m.type || '',
+    time_min: numOrNull(m.time),
+    use: m.use || '',
+    display_amount: formatAmountUnit(m.amount, m.unit),
   }));
   const allFields = [];
   collectAllFieldsFromJson(raw, '', allFields, BREWFATHER_HANDLED_KEYS);
@@ -2790,6 +2840,9 @@ function mapBrewfatherRecipe(raw) {
     mash_efficiency_pct: numOrNull(raw.mashEfficiency),
     mash_steps: mashSteps,
     hops: hops,
+    fermentables: fermentables,
+    yeasts: yeasts,
+    miscs: miscs,
     all_fields: allFields,
   };
 }
