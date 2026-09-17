@@ -2793,7 +2793,7 @@ function pollBrewfatherStatus(onDone, onError) {
 const BREWFATHER_HANDLED_KEYS = [
   'name', 'thumb', 'og', 'fg', 'ibu', 'abv', 'mash', 'hops',
   'author', 'type', 'equipment', 'batchSize', 'boilTime', 'boilSize', 'efficiency', 'mashEfficiency',
-  'style', 'color', 'fermentables', 'yeasts', 'miscs',
+  'color', 'fermentables', 'yeasts', 'miscs',
   'preBoilGravity', 'sumAromaHopPerLiter', 'sumDryHopPerLiter',
   'hopStandMinutes', 'avgWeightedHopstandTemp', 'rbRatio', 'carbonation',
   // buGuRatio is deliberately NOT listed here - we display our own
@@ -2808,6 +2808,17 @@ const BREWFATHER_HANDLED_KEYS = [
   // displays. Excluding the whole key would silently drop those, the
   // exact bug class this project keeps fixing - so the two leaves we do
   // show duplicate into All Other Fields too rather than risk that.
+  //
+  // 'style' is likewise deliberately NOT listed here (removed after
+  // review): raw.style has ~26 leaves and Style Range/style_code only
+  // consume 15 of them (the *Min/*Max range pairs, categoryNumber,
+  // styleLetter, name) - styleGuide, category, type, rbrMin/Max, carbMin/
+  // Max, lovibondMin/Max and the nested carbonationStyle object were all
+  // being silently dropped. The 15 consumed leaves now duplicate into All
+  // Other Fields too, a small, accepted redundancy in exchange for never
+  // silently losing the other 11+. Surfacing rbrMin/Max etc. as their own
+  // rows instead of just not-dropping them is a possible future pass, not
+  // done here.
 ];
 
 // Brewfather gives yeast/misc amounts as a separate {amount, unit} pair
