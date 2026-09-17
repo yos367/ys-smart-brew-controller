@@ -843,6 +843,15 @@
         <div class="recipe-list" id="recipe-equipment-list"></div>
       </div>
 
+      <div class="recipe-section" id="section-style-range">
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">📏</span>
+          <span class="recipe-section-label">Style Range</span>
+          <span class="recipe-section-total" id="section-style-range-total"></span>
+        </div>
+        <div class="recipe-list" id="recipe-style-range-list"></div>
+      </div>
+
       <div class="recipe-section" id="section-fermentables">
         <div class="recipe-section-header">
           <span class="recipe-section-icon">🌾</span>
@@ -850,6 +859,31 @@
           <span class="recipe-section-total" id="section-fermentables-total"></span>
         </div>
         <div class="recipe-list" id="recipe-fermentables-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-hops">
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🌿</span>
+          <span class="recipe-section-label">Hops</span>
+          <span class="recipe-section-total" id="section-hops-total"></span>
+        </div>
+        <div class="recipe-list" id="recipe-hops-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-misc">
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🧂</span>
+          <span class="recipe-section-label">Other Additions</span>
+        </div>
+        <div class="recipe-list" id="recipe-misc-list"></div>
+      </div>
+
+      <div class="recipe-section" id="section-yeast">
+        <div class="recipe-section-header">
+          <span class="recipe-section-icon">🧫</span>
+          <span class="recipe-section-label">Yeast</span>
+        </div>
+        <div class="recipe-list" id="recipe-yeast-list"></div>
       </div>
 
       <div class="recipe-section" id="section-mash">
@@ -870,46 +904,16 @@
         <div class="recipe-list" id="recipe-fermentation-list"></div>
       </div>
 
-      <div class="recipe-section" id="section-hops">
-        <div class="recipe-section-header">
-          <span class="recipe-section-icon">🌿</span>
-          <span class="recipe-section-label">Hops</span>
-          <span class="recipe-section-total" id="section-hops-total"></span>
-        </div>
-        <div class="recipe-list" id="recipe-hops-list"></div>
-      </div>
-
-      <div class="recipe-section" id="section-yeast">
-        <div class="recipe-section-header">
-          <span class="recipe-section-icon">🧫</span>
-          <span class="recipe-section-label">Yeast</span>
-        </div>
-        <div class="recipe-list" id="recipe-yeast-list"></div>
-      </div>
-
+      <!-- Water last, per the reference screenshots - content wiring for
+           Brewfather's own richer water/mineral profile is a later stage;
+           this positions it correctly now rather than deferring the
+           reorder along with the content. -->
       <div class="recipe-section" id="section-water">
         <div class="recipe-section-header">
           <span class="recipe-section-icon">💧</span>
           <span class="recipe-section-label">Water / Minerals</span>
         </div>
         <div class="recipe-list" id="recipe-water-list"></div>
-      </div>
-
-      <div class="recipe-section" id="section-misc">
-        <div class="recipe-section-header">
-          <span class="recipe-section-icon">🧂</span>
-          <span class="recipe-section-label">Other Additions</span>
-        </div>
-        <div class="recipe-list" id="recipe-misc-list"></div>
-      </div>
-
-      <div class="recipe-section" id="section-style-range">
-        <div class="recipe-section-header">
-          <span class="recipe-section-icon">📏</span>
-          <span class="recipe-section-label">Style Range</span>
-          <span class="recipe-section-total" id="section-style-range-total"></span>
-        </div>
-        <div class="recipe-list" id="recipe-style-range-list"></div>
       </div>
 
       <div class="recipe-section" id="section-all-fields">
@@ -1486,6 +1490,15 @@ function renderRecipeSection(sectionEl, listEl, items, mapItem, totalEl, totalFn
   const totalText = totalFn ? totalFn(list) : '';
   if (list.length === 0 && !totalText) {
     sectionEl.style.display = 'none';
+    // Clear stale content, not just hide it - otherwise a later render of
+    // a *different* recipe that happens to share this list element (import
+    // then load, or load then import, without a page reload between them)
+    // leaves the previous recipe's rows sitting in the DOM, invisible only
+    // because the parent is display:none. Harmless to a real user since
+    // the section really is hidden, but confusing to anything that reads
+    // the list element directly instead of checking section visibility.
+    listEl.innerHTML = '';
+    if (totalEl) totalEl.textContent = '';
     return;
   }
   sectionEl.style.display = '';
@@ -1691,6 +1704,50 @@ function showRecipePreview(recipe, mode) {
   renderRecipeSection(sectionEquipmentEl, recipeEquipmentListEl, equipmentRows, (r) => r,
     sectionEquipmentTotalEl, () => recipe.equipment_name || '');
 
+  // Section order below (Style Range, Fermentables, Hops, Other Additions,
+  // Yeast, Mash Profile, Fermentation Profile, Water) matches the HTML's
+  // own section order, which is what actually controls what the browser
+  // draws - reordering these render calls alone would change nothing on
+  // screen, so the <div class="recipe-section"> blocks earlier in this
+  // file were moved to match this same sequence. Kept in sync here purely
+  // so the code reads top-to-bottom the same way the page does.
+
+  // Style range: plain numbers, not the slider/gauge graphic real
+  // Brewfather uses (explicitly out of scope) - one row per metric that
+  // has both a file-provided range AND a value from this recipe to
+  // compare it against, so "your recipe" is always a real number too.
+  const ranges = recipe.style_ranges;
+  const styleRangeRows = [];
+  if (ranges) {
+    if (isNum(ranges.og_min) && isNum(ranges.og_max)) {
+      styleRangeRows.push({ amt: '', name: 'OG', val: ranges.og_min.toFixed(3) + ' - ' + ranges.og_max.toFixed(3), detail: isNum(recipe.og) ? 'Your recipe: ' + recipe.og.toFixed(3) : '' });
+    }
+    if (isNum(ranges.fg_min) && isNum(ranges.fg_max)) {
+      styleRangeRows.push({ amt: '', name: 'FG', val: ranges.fg_min.toFixed(3) + ' - ' + ranges.fg_max.toFixed(3), detail: isNum(recipe.fg) ? 'Your recipe: ' + recipe.fg.toFixed(3) : '' });
+    }
+    if (isNum(ranges.abv_min) && isNum(ranges.abv_max)) {
+      styleRangeRows.push({ amt: '', name: 'ABV', val: ranges.abv_min.toFixed(1) + ' - ' + ranges.abv_max.toFixed(1) + '%', detail: isNum(recipe.abv) ? 'Your recipe: ' + recipe.abv.toFixed(1) + '%' : '' });
+    }
+    if (isNum(ranges.ibu_min) && isNum(ranges.ibu_max)) {
+      styleRangeRows.push({ amt: '', name: 'IBU', val: ranges.ibu_min.toFixed(0) + ' - ' + ranges.ibu_max.toFixed(0), detail: isNum(recipe.ibu) ? 'Your recipe: ' + Math.round(recipe.ibu) : '' });
+    }
+    if (isNum(ranges.color_min) && isNum(ranges.color_max)) {
+      styleRangeRows.push({ amt: '', name: 'Color', val: ranges.color_min.toFixed(0) + ' - ' + ranges.color_max.toFixed(0) + ' SRM', detail: isNum(recipe.color) ? 'Your recipe: ' + recipe.color.toFixed(0) + ' SRM' : '' });
+    }
+    // BU:GU has no BeerXML equivalent tag at all, so ranges.bu_gu_min/max
+    // stay unset on that path and this row hides there via the same
+    // isNum() guard as every other not-in-the-file row. The "your recipe"
+    // side is simple arithmetic from numbers already parsed (ibu, og) -
+    // in scope per the display spec, unlike Brewfather's own more precise
+    // internal BU:GU/RBR calculation which is explicitly out of scope.
+    if (isNum(ranges.bu_gu_min) && isNum(ranges.bu_gu_max)) {
+      const buGu = computeBuGu(recipe);
+      styleRangeRows.push({ amt: '', name: 'BU:GU', val: ranges.bu_gu_min.toFixed(2) + ' - ' + ranges.bu_gu_max.toFixed(2), detail: isNum(buGu) ? 'Your recipe: ' + buGu.toFixed(2) : '' });
+    }
+  }
+  renderRecipeSection(sectionStyleRangeEl, recipeStyleRangeListEl, styleRangeRows, (r) => r,
+    sectionStyleRangeTotalEl, () => recipe.style_code || '');
+
   const fermTotalKg = (recipe.fermentables || []).reduce((acc, f) => acc + (f.amount_kg || 0), 0);
   // Footer stats after the per-fermentable rows: Pre-Boil Gravity is a
   // derived value Brewfather computes for us (no BeerXML equivalent tag,
@@ -1710,9 +1767,47 @@ function showRecipePreview(recipe, mode) {
   renderRecipeSection(sectionFermentablesEl, recipeFermentablesListEl, fermentableRows, (r) => r,
     sectionFermentablesTotalEl, () => totalKg(recipe.fermentables || [], 'amount_kg'));
 
-  // Mash Profile: steps first, then Apparent Attenuation as its own row -
-  // it's a computed relationship between OG/FG, not a per-step value, but
-  // the spec files it under "Mash" so it lives in this section's list.
+  // Footer stats after the per-hop rows. Aroma/Dry Hop g/L and BU:GU use
+  // a Brewfather-supplied value when there is one, falling back to a
+  // simple client-side sum/ratio from fields already parsed when there
+  // isn't (BeerXML) - see sumHopPerLiter()/computeBuGu(). Hopstand and RBR
+  // have no such fallback: both are weighted-average/proprietary
+  // Brewfather calculations explicitly out of scope to reimplement, so
+  // they just hide on the BeerXML path via the same isNum() guard as
+  // every other not-in-the-file row.
+  const hopRows = (recipe.hops || []).map((h) => mapHopRow(h, recipe.batch_size_l));
+  const aromaGL = isNum(recipe.sum_aroma_hop_per_liter) ? recipe.sum_aroma_hop_per_liter
+    : sumHopPerLiter(recipe.hops, 'Aroma', recipe.batch_size_l);
+  if (isNum(aromaGL)) {
+    hopRows.push({ amt: '', name: 'Aroma Hops', val: aromaGL.toFixed(2) + ' g/L' });
+  }
+  const dryHopGL = isNum(recipe.sum_dry_hop_per_liter) ? recipe.sum_dry_hop_per_liter
+    : sumHopPerLiter(recipe.hops, 'Dry Hop', recipe.batch_size_l);
+  if (isNum(dryHopGL)) {
+    hopRows.push({ amt: '', name: 'Dry Hops', val: dryHopGL.toFixed(2) + ' g/L' });
+  }
+  if (isNum(recipe.hop_stand_minutes) && isNum(recipe.avg_weighted_hopstand_temp_c)) {
+    hopRows.push({ amt: '', name: 'Hopstand', val: recipe.hop_stand_minutes.toFixed(0) + ' min @ ' + recipe.avg_weighted_hopstand_temp_c.toFixed(0) + '°C' });
+  }
+  if (isNum(recipe.ibu)) {
+    hopRows.push({ amt: '', name: 'Total IBU', val: Math.round(recipe.ibu) });
+  }
+  const buGu = computeBuGu(recipe);
+  if (isNum(buGu)) {
+    hopRows.push({ amt: '', name: 'BU:GU', val: buGu.toFixed(2) });
+  }
+  if (isNum(recipe.rb_ratio)) {
+    hopRows.push({ amt: '', name: 'RBR', val: recipe.rb_ratio.toFixed(2) });
+  }
+  renderRecipeSection(sectionHopsEl, recipeHopsListEl, hopRows, (r) => r,
+    sectionHopsTotalEl, () => totalG(recipe.hops || [], 'amount_g'));
+
+  renderRecipeSection(sectionMiscEl, recipeMiscListEl, recipe.miscs, mapMiscRow);
+  renderRecipeSection(sectionYeastEl, recipeYeastListEl, recipe.yeasts, mapYeastRow);
+
+  // Mash Profile: steps first, then footer stats - Apparent Attenuation is
+  // a computed relationship between OG/FG, not a per-step value, but the
+  // spec files it under "Mash" so it lives in this section's list.
   // Deliberately NOT chasing Brewfather's own displayed number exactly -
   // Brewfather uses internal OG/FG precision this rounded XML doesn't
   // have, so ours will be close but not identical, which is expected.
@@ -1757,80 +1852,8 @@ function showRecipePreview(recipe, mode) {
   renderRecipeSection(sectionFermentationEl, recipeFermentationListEl, fermentationRows, (r) => r,
     sectionFermentationTotalEl, () => recipe.fermentation_profile_name || '');
 
-  // Footer stats after the per-hop rows. Aroma/Dry Hop g/L and BU:GU use
-  // a Brewfather-supplied value when there is one, falling back to a
-  // simple client-side sum/ratio from fields already parsed when there
-  // isn't (BeerXML) - see sumHopPerLiter()/computeBuGu(). Hopstand and RBR
-  // have no such fallback: both are weighted-average/proprietary
-  // Brewfather calculations explicitly out of scope to reimplement, so
-  // they just hide on the BeerXML path via the same isNum() guard as
-  // every other not-in-the-file row.
-  const hopRows = (recipe.hops || []).map((h) => mapHopRow(h, recipe.batch_size_l));
-  const aromaGL = isNum(recipe.sum_aroma_hop_per_liter) ? recipe.sum_aroma_hop_per_liter
-    : sumHopPerLiter(recipe.hops, 'Aroma', recipe.batch_size_l);
-  if (isNum(aromaGL)) {
-    hopRows.push({ amt: '', name: 'Aroma Hops', val: aromaGL.toFixed(2) + ' g/L' });
-  }
-  const dryHopGL = isNum(recipe.sum_dry_hop_per_liter) ? recipe.sum_dry_hop_per_liter
-    : sumHopPerLiter(recipe.hops, 'Dry Hop', recipe.batch_size_l);
-  if (isNum(dryHopGL)) {
-    hopRows.push({ amt: '', name: 'Dry Hops', val: dryHopGL.toFixed(2) + ' g/L' });
-  }
-  if (isNum(recipe.hop_stand_minutes) && isNum(recipe.avg_weighted_hopstand_temp_c)) {
-    hopRows.push({ amt: '', name: 'Hopstand', val: recipe.hop_stand_minutes.toFixed(0) + ' min @ ' + recipe.avg_weighted_hopstand_temp_c.toFixed(0) + '°C' });
-  }
-  if (isNum(recipe.ibu)) {
-    hopRows.push({ amt: '', name: 'Total IBU', val: Math.round(recipe.ibu) });
-  }
-  const buGu = computeBuGu(recipe);
-  if (isNum(buGu)) {
-    hopRows.push({ amt: '', name: 'BU:GU', val: buGu.toFixed(2) });
-  }
-  if (isNum(recipe.rb_ratio)) {
-    hopRows.push({ amt: '', name: 'RBR', val: recipe.rb_ratio.toFixed(2) });
-  }
-  renderRecipeSection(sectionHopsEl, recipeHopsListEl, hopRows, (r) => r,
-    sectionHopsTotalEl, () => totalG(recipe.hops || [], 'amount_g'));
-  renderRecipeSection(sectionYeastEl, recipeYeastListEl, recipe.yeasts, mapYeastRow);
   renderRecipeSection(sectionWaterEl, recipeWaterListEl, recipe.waters,
     (w) => ({ amt: '', name: w.name, val: isNum(w.amount) ? w.amount.toFixed(1) + ' L' : '' }));
-  renderRecipeSection(sectionMiscEl, recipeMiscListEl, recipe.miscs, mapMiscRow);
-
-  // Style range: plain numbers, not the slider/gauge graphic real
-  // Brewfather uses (explicitly out of scope) - one row per metric that
-  // has both a file-provided range AND a value from this recipe to
-  // compare it against, so "your recipe" is always a real number too.
-  const ranges = recipe.style_ranges;
-  const styleRangeRows = [];
-  if (ranges) {
-    if (isNum(ranges.og_min) && isNum(ranges.og_max)) {
-      styleRangeRows.push({ amt: '', name: 'OG', val: ranges.og_min.toFixed(3) + ' - ' + ranges.og_max.toFixed(3), detail: isNum(recipe.og) ? 'Your recipe: ' + recipe.og.toFixed(3) : '' });
-    }
-    if (isNum(ranges.fg_min) && isNum(ranges.fg_max)) {
-      styleRangeRows.push({ amt: '', name: 'FG', val: ranges.fg_min.toFixed(3) + ' - ' + ranges.fg_max.toFixed(3), detail: isNum(recipe.fg) ? 'Your recipe: ' + recipe.fg.toFixed(3) : '' });
-    }
-    if (isNum(ranges.abv_min) && isNum(ranges.abv_max)) {
-      styleRangeRows.push({ amt: '', name: 'ABV', val: ranges.abv_min.toFixed(1) + ' - ' + ranges.abv_max.toFixed(1) + '%', detail: isNum(recipe.abv) ? 'Your recipe: ' + recipe.abv.toFixed(1) + '%' : '' });
-    }
-    if (isNum(ranges.ibu_min) && isNum(ranges.ibu_max)) {
-      styleRangeRows.push({ amt: '', name: 'IBU', val: ranges.ibu_min.toFixed(0) + ' - ' + ranges.ibu_max.toFixed(0), detail: isNum(recipe.ibu) ? 'Your recipe: ' + Math.round(recipe.ibu) : '' });
-    }
-    if (isNum(ranges.color_min) && isNum(ranges.color_max)) {
-      styleRangeRows.push({ amt: '', name: 'Color', val: ranges.color_min.toFixed(0) + ' - ' + ranges.color_max.toFixed(0) + ' SRM', detail: isNum(recipe.color) ? 'Your recipe: ' + recipe.color.toFixed(0) + ' SRM' : '' });
-    }
-    // BU:GU has no BeerXML equivalent tag at all, so ranges.bu_gu_min/max
-    // stay unset on that path and this row hides there via the same
-    // isNum() guard as every other not-in-the-file row. The "your recipe"
-    // side is simple arithmetic from numbers already parsed (ibu, og) -
-    // in scope per the display spec, unlike Brewfather's own more precise
-    // internal BU:GU/RBR calculation which is explicitly out of scope.
-    if (isNum(ranges.bu_gu_min) && isNum(ranges.bu_gu_max)) {
-      const buGu = computeBuGu(recipe);
-      styleRangeRows.push({ amt: '', name: 'BU:GU', val: ranges.bu_gu_min.toFixed(2) + ' - ' + ranges.bu_gu_max.toFixed(2), detail: isNum(buGu) ? 'Your recipe: ' + buGu.toFixed(2) : '' });
-    }
-  }
-  renderRecipeSection(sectionStyleRangeEl, recipeStyleRangeListEl, styleRangeRows, (r) => r,
-    sectionStyleRangeTotalEl, () => recipe.style_code || '');
 
   renderRecipeSection(sectionAllFieldsEl, recipeAllFieldsListEl, recipe.all_fields,
     (f) => ({ amt: '', name: f.name, val: f.value }));
