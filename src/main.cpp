@@ -1163,6 +1163,28 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     letter-spacing:1px; color:var(--text-dim); margin-top:4px;
   }
 
+  /* brand-orange, not red - same reservation as the boot Fail screen: a
+     dropped connection that the safety net already handled correctly is
+     not itself an active safety event, just something the user must know
+     about rather than assume is fine. */
+  .brew-warning {
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    background:#2a1f10; border:1px solid var(--brand-orange);
+    border-radius:4px; padding:12px 14px;
+  }
+  .brew-warning span {
+    font-family:'Rajdhani',sans-serif; font-size:14px; font-weight:600;
+    color:var(--brand-orange);
+  }
+  .brew-warning-dismiss {
+    font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
+    letter-spacing:1px; text-transform:uppercase; color:var(--brand-orange);
+    background:none; border:1px solid var(--brand-orange); border-radius:4px;
+    padding:5px 10px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    flex-shrink:0;
+  }
+  .brew-warning-dismiss:active { transform:scale(0.95); }
+
   .brew-temp-hero {
     background:var(--panel-bg); border:1px solid var(--border-dim);
     border-radius:4px; padding:20px; text-align:center;
@@ -1604,6 +1626,14 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       <div class="brew-stage-next" id="brew-stage-next">--</div>
     </div>
 
+    <!-- Hidden by default - surfaces main.cpp's own "0 connected clients"
+         safety net when it fires, so a WS drop/reconnect never happens
+         silently while a step's countdown keeps ticking. -->
+    <div class="brew-warning" id="brew-warning" style="display:none">
+      <span id="brew-warning-text"></span>
+      <button class="brew-warning-dismiss" onclick="dismissBrewWarning()">Dismiss</button>
+    </div>
+
     <div class="brew-temp-hero">
       <div class="brew-temp-value" id="brew-temp-value">--</div>
       <div class="brew-temp-label">CURRENT TEMPERATURE (PT1)</div>
@@ -1883,6 +1913,8 @@ const brewPump2StateEl = document.getElementById('brew-pump2-state');
 const brewMessageEl = document.getElementById('brew-message');
 const brewConfirmBtnEl = document.getElementById('brew-confirm-btn');
 const brewGraphCanvasEl = document.getElementById('brew-graph');
+const brewWarningEl = document.getElementById('brew-warning');
+const brewWarningTextEl = document.getElementById('brew-warning-text');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
@@ -2106,6 +2138,8 @@ const STAGES = {
           if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send('start_control:' + brewTargetSetpoint.toFixed(1));
           }
+          brewHeatingArmed = true;
+          brewHeatingArmedAt = Date.now();
           advanceBrewStep(1);
         },
       },
@@ -2132,6 +2166,7 @@ const STAGES = {
           // hasn't decided what it wants yet, even though bang-bang would
           // hold steady on its own.
           if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
+          brewHeatingArmed = false;
           startStage('dough_in');
         },
       },
@@ -2197,6 +2232,8 @@ function buildMashSteps(mashSteps) {
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send('start_control:' + ms.temp_c.toFixed(1));
         }
+        brewHeatingArmed = true;
+        brewHeatingArmedAt = Date.now();
       },
     });
 
@@ -2220,6 +2257,7 @@ function buildMashSteps(mashSteps) {
       confirmLabel: isLast ? 'Next Stage →' : 'Next Step →',
       onConfirm: () => {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
+        brewHeatingArmed = false;
         if (isLast) { advanceToNextStage(); } else { advanceBrewStep(currentStepIndex + 1); }
       },
     });
@@ -2250,6 +2288,27 @@ let brewTargetSetpoint = null;
 let brewTargetReached = false;
 let brewCountdownSec = null; // null = no timer running in the current step
 
+// True whenever this page has told the ESP32 to hold a target temperature
+// and hasn't itself asked it to stop yet (see the two places that send
+// start_control/stop_control above). If a "manual" broadcast ever shows
+// control_active=false while this is still true, nothing on this page
+// asked for that - it can only be main.cpp's own "0 connected clients"
+// safety net, which is correct behavior, just silent. See
+// handleBrewManual() below for where that gets surfaced.
+let brewHeatingArmed = false;
+// Guards against a false positive when one step's "complete" confirm sends
+// stop_control and immediately arms the next step's start_control in the
+// same click (e.g. mash step N -> N+1): the ESP32 echoes both commands in
+// order, but if the stale first echo (control_active:false, for the
+// already-superseded stop_control) arrives after this page has already
+// re-armed for the new step, it looks identical to an unexpected drop.
+// Ignoring control_active:false for a moment right after arming gives the
+// second echo (from the fresh start_control, sent essentially immediately
+// by main.cpp) time to arrive and correct it - a real dropped connection
+// stays false for far longer than this.
+let brewHeatingArmedAt = 0;
+const BREW_HEATING_GRACE_MS = 1500;
+
 function startBrewing() {
   if (!currentRecipe) return;
   unlockBrewAudio();
@@ -2265,6 +2324,8 @@ function startStage(stageId) {
   currentStepIndex = 0;
   brewTargetReached = false;
   brewCountdownSec = null;
+  brewHeatingArmed = false; // the new stage's own steps re-arm this if they heat
+  dismissBrewWarning();
   const stage = STAGES[stageId];
   brewStageNameEl.textContent = stage.name;
   brewStageNextEl.textContent = 'Next: ' + stage.nextName;
@@ -2279,6 +2340,7 @@ function advanceBrewStep(index) {
   if (!stage || index >= stage.steps.length) return;
   currentStepIndex = index;
   brewCountdownSec = null;
+  dismissBrewWarning();
   const step = stage.steps[index];
   if (step.onEnter) step.onEnter();
   renderBrewStep();
@@ -2329,9 +2391,19 @@ function exitBrewCook() {
   // NOT trip the "0 connected clients" safety net in main.cpp, so this has
   // to be explicit.
   if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
+  brewHeatingArmed = false;
   brewActive = false;
   brewCookEl.classList.remove('visible');
   menuEl.classList.add('visible');
+}
+
+function showBrewWarning(text) {
+  brewWarningTextEl.textContent = text;
+  brewWarningEl.style.display = '';
+}
+
+function dismissBrewWarning() {
+  brewWarningEl.style.display = 'none';
 }
 
 function handleBrewManual(m) {
@@ -2346,6 +2418,26 @@ function handleBrewManual(m) {
   brewPump2StateEl.textContent = m.relay2 ? 'ON' : 'OFF';
 
   pushBrewSample(m.pt1, m.pt2);
+
+  // If this page armed heating and hasn't itself asked to stop, but the
+  // ESP32 now reports control_active=false, nothing here caused that - it
+  // can only be main.cpp's own "0 connected clients" safety net (a brief
+  // WS drop/reconnect, e.g. the phone's browser backgrounding). That
+  // failsafe is correct and untouched; this just stops it from being
+  // silent - without it, the countdown below keeps ticking as if
+  // temperature were still being held, with nothing on screen to say
+  // otherwise. The grace window guards a real race: moving from one mash
+  // step's "complete" confirm straight into the next step's heating sends
+  // stop_control then start_control back to back, and the ESP32's echo of
+  // the now-superseded stop_control can arrive after this page has already
+  // re-armed for the new step - without the window that stale echo would
+  // look identical to a genuine drop (found by testing this fix, not
+  // theoretical).
+  if (brewHeatingArmed && !m.control_active &&
+      (Date.now() - brewHeatingArmedAt) > BREW_HEATING_GRACE_MS) {
+    brewHeatingArmed = false;
+    showBrewWarning('Connection was lost — heating paused.');
+  }
 
   const stage = STAGES[currentStageId];
   const step = stage && stage.steps[currentStepIndex];
