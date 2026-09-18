@@ -1558,12 +1558,14 @@ const STAGES = {
         id: 'heating',
         audio: 'water_prep_heating',
         // No confirmLabel - this step never shows the confirm button and
-        // never advances itself. handleBrewManual() below watches the live
-        // temperature and calls advanceBrewStep(2) once the target is
-        // reached - reaching temperature is not "stage advance" and must
-        // never need a click, but it also isn't a click itself.
+        // never advances itself. autoAdvanceOnTemp tells handleBrewManual()
+        // below to watch the live temperature and advance on its own once
+        // brewTargetSetpoint is reached - reaching temperature is not
+        // "stage advance" and must never need a click, but it also isn't a
+        // click itself.
         message: 'Starting heating to strike temperature...',
         confirmLabel: null,
+        autoAdvanceOnTemp: true,
       },
       {
         id: 'ready',
@@ -1575,12 +1577,105 @@ const STAGES = {
           // hasn't decided what it wants yet, even though bang-bang would
           // hold steady on its own.
           if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
-          advanceToNextStage();
+          startStage('dough_in');
         },
       },
     ],
   },
+
+  // ── Dough In ── same one-prompt-one-confirm shape as Water Prep's own
+  // 'fill' step - no temperature, no timer, just "do the physical thing,
+  // then tell me". mash_steps' actual step list is built fresh by
+  // buildMashSteps() right below, right before startStage('mash_steps') -
+  // the empty array here is only ever a placeholder.
+  dough_in: {
+    name: 'Dough In',
+    nextName: 'Mash',
+    steps: [
+      {
+        id: 'add_grain',
+        audio: 'dough_in_add_grain',
+        message: 'Add grain now.',
+        confirmLabel: 'Grain Added — Continue',
+        onConfirm: () => {
+          STAGES.mash_steps.steps = buildMashSteps(currentRecipe.mash_steps || []);
+          startStage('mash_steps');
+        },
+      },
+    ],
+  },
+
+  mash_steps: {
+    name: 'Mash',
+    nextName: 'Boil',
+    steps: [], // replaced per-brew by buildMashSteps() - see dough_in above
+  },
 };
+
+// One recipe mash step (name/temp_c/time_min - see mapMashStepRow(), the
+// same field names the Recipe Preview screen already uses; not re-guessed
+// here) becomes three generic engine steps: heat to temp (auto-advances,
+// same mechanism as Water Prep's own heating step), hold for the step's
+// duration with a live countdown (auto-advances when it hits zero), then a
+// manual-confirm "step complete" gate (never skipped, even though it's
+// purely time-based - same rule as everywhere else). Consecutive steps at
+// the same temperature aren't special-cased: the heating step's onEnter
+// sends start_control as usual, and the very next live-temp tick already
+// satisfies the target, so it advances to the timer immediately on its own.
+function buildMashSteps(mashSteps) {
+  const steps = [];
+  mashSteps.forEach((ms, i) => {
+    const label = ms.name || ('Mash Step ' + (i + 1));
+    const isLast = i === mashSteps.length - 1;
+
+    steps.push({
+      id: 'mash_heating_' + i,
+      audio: 'mash_step_heating',
+      message: isNum(ms.temp_c) ? 'Heating to ' + ms.temp_c.toFixed(0) + '°C — ' + label
+                                 : 'Heating — ' + label,
+      confirmLabel: null,
+      autoAdvanceOnTemp: true,
+      onEnter: () => {
+        brewTargetReached = false;
+        if (!isNum(ms.temp_c)) { advanceBrewStep(currentStepIndex + 1); return; }
+        brewTargetSetpoint = ms.temp_c;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send('start_control:' + ms.temp_c.toFixed(1));
+        }
+      },
+    });
+
+    steps.push({
+      id: 'mash_timer_' + i,
+      audio: 'mash_step_temp_reached',
+      confirmLabel: null,
+      isTimer: true,
+      baseMessage: 'Holding — ' + label,
+      onEnter: () => {
+        const sec = isNum(ms.time_min) ? Math.round(ms.time_min * 60) : 0;
+        if (sec <= 0) { advanceBrewStep(currentStepIndex + 1); return; }
+        brewCountdownSec = sec;
+      },
+    });
+
+    steps.push({
+      id: 'mash_complete_' + i,
+      audio: 'mash_step_time_complete',
+      message: label + ' complete.',
+      confirmLabel: isLast ? 'Next Stage →' : 'Next Step →',
+      onConfirm: () => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
+        if (isLast) { advanceToNextStage(); } else { advanceBrewStep(currentStepIndex + 1); }
+      },
+    });
+  });
+  return steps;
+}
+
+function formatCountdown(totalSec) {
+  const m = Math.floor(totalSec / 60), s = totalSec % 60;
+  return String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
 
 // Placeholder strike-temp estimate: the first mash step's own target temp,
 // which is real recipe data already on hand - not a guessed number, but
@@ -1598,6 +1693,7 @@ let currentStageId = null;
 let currentStepIndex = 0;
 let brewTargetSetpoint = null;
 let brewTargetReached = false;
+let brewCountdownSec = null; // null = no timer running in the current step
 
 function startBrewing() {
   if (!currentRecipe) return;
@@ -1613,25 +1709,36 @@ function startStage(stageId) {
   currentStageId = stageId;
   currentStepIndex = 0;
   brewTargetReached = false;
+  brewCountdownSec = null;
   const stage = STAGES[stageId];
   brewStageNameEl.textContent = stage.name;
   brewStageNextEl.textContent = 'Next: ' + stage.nextName;
+  const step = stage.steps[0];
+  if (step.onEnter) step.onEnter();
   renderBrewStep();
-  playAudioEvent(stage.steps[0].audio);
+  playAudioEvent(step.audio);
 }
 
 function advanceBrewStep(index) {
   const stage = STAGES[currentStageId];
   if (!stage || index >= stage.steps.length) return;
   currentStepIndex = index;
+  brewCountdownSec = null;
+  const step = stage.steps[index];
+  if (step.onEnter) step.onEnter();
   renderBrewStep();
-  playAudioEvent(stage.steps[index].audio);
+  playAudioEvent(step.audio);
 }
 
 function renderBrewStep() {
   const stage = STAGES[currentStageId];
   const step = stage.steps[currentStepIndex];
-  brewMessageEl.textContent = step.message;
+  // A timer step's message is built fresh each tick (see tickMashTimer())
+  // to include the live countdown - only set the static text here so the
+  // very first render (before any tick) still shows something sensible.
+  brewMessageEl.textContent = step.isTimer
+    ? step.baseMessage + ' — ' + formatCountdown(brewCountdownSec || 0)
+    : step.message;
   if (step.confirmLabel) {
     brewConfirmBtnEl.textContent = step.confirmLabel;
     brewConfirmBtnEl.style.display = '';
@@ -1685,14 +1792,37 @@ function handleBrewManual(m) {
 
   pushBrewSample(m.pt1, m.pt2);
 
-  // Water Prep's "heating" step ends when the target is reached - checked
-  // here (live temp data), not on a timer, and only fires once per stage
-  // (brewTargetReached guards against re-triggering every second while
-  // the bang-bang loop holds temperature steady above target).
-  if (!brewTargetReached && currentStageId === 'water_prep' && currentStepIndex === 1 &&
+  const stage = STAGES[currentStageId];
+  const step = stage && stage.steps[currentStepIndex];
+  if (!step) return;
+
+  // Any step flagged autoAdvanceOnTemp (Water Prep's heating step, each
+  // mash step's heating phase) ends when the live temp reaches the target
+  // that step's onEnter sent via start_control - checked here, not on a
+  // timer. brewTargetReached guards against re-triggering every second
+  // while the bang-bang loop holds temperature steady above target.
+  // Consecutive mash steps at the same temp fall out of this naturally:
+  // the new step's onEnter resets brewTargetReached, and since the live
+  // temp already satisfies the (unchanged) target, the very next tick
+  // advances immediately - no special-casing needed.
+  if (step.autoAdvanceOnTemp && !brewTargetReached &&
       brewTargetSetpoint !== null && isNum(m.pt1) && m.pt1 >= brewTargetSetpoint) {
     brewTargetReached = true;
-    advanceBrewStep(2);
+    advanceBrewStep(currentStepIndex + 1);
+    return;
+  }
+
+  // A timer step counts down once per "manual" broadcast (~1/s, same
+  // cadence the rest of this page already relies on) rather than its own
+  // setInterval, so the displayed number can never drift from the ticks
+  // that actually drive it.
+  if (step.isTimer && brewCountdownSec !== null) {
+    brewCountdownSec = Math.max(0, brewCountdownSec - 1);
+    if (brewCountdownSec <= 0) {
+      advanceBrewStep(currentStepIndex + 1);
+    } else {
+      renderBrewStep();
+    }
   }
 }
 
@@ -1706,6 +1836,10 @@ const AUDIO_FILES = {
   water_prep_fill: 'water_prep_fill.mp3',
   water_prep_heating: 'water_prep_heating.mp3',
   water_prep_ready: 'water_prep_ready.mp3',
+  dough_in_add_grain: 'dough_in_add_grain.mp3',
+  mash_step_heating: 'mash_step_heating.mp3',
+  mash_step_temp_reached: 'mash_step_temp_reached.mp3',
+  mash_step_time_complete: 'mash_step_time_complete.mp3',
 };
 let brewAudioCtx = null;
 const brewAudioBuffers = {};
