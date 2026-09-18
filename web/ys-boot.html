@@ -630,6 +630,27 @@
   }
   .brew-warning-dismiss:active { transform:scale(0.95); }
 
+  /* brand-teal, not orange - this is routine "do a thing now" info (same
+     family as "pump is on"), not a problem to be alarmed about like a
+     dropped connection. */
+  .brew-hop-alert {
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    background:#132424; border:1px solid var(--brand-teal);
+    border-radius:4px; padding:12px 14px;
+  }
+  .brew-hop-alert span {
+    font-family:'Rajdhani',sans-serif; font-size:14px; font-weight:600;
+    color:var(--brand-teal);
+  }
+  .brew-hop-alert-dismiss {
+    font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
+    letter-spacing:1px; text-transform:uppercase; color:var(--brand-teal);
+    background:none; border:1px solid var(--brand-teal); border-radius:4px;
+    padding:5px 10px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    flex-shrink:0;
+  }
+  .brew-hop-alert-dismiss:active { transform:scale(0.95); }
+
   .brew-temp-hero {
     background:var(--panel-bg); border:1px solid var(--border-dim);
     border-radius:4px; padding:20px; text-align:center;
@@ -1081,7 +1102,18 @@
 
     <div class="brew-temp-hero">
       <div class="brew-temp-value" id="brew-temp-value">--</div>
-      <div class="brew-temp-label">CURRENT TEMPERATURE (PT1)</div>
+      <!-- Text set by handleBrewManual() per stage.sensorKey - PT1 for
+           RIMS-based stages (Water Prep, Mash), PT2 for Boil. -->
+      <div class="brew-temp-label" id="brew-temp-label">CURRENT TEMPERATURE (PT1)</div>
+    </div>
+
+    <!-- Hidden by default - hop-addition alerts during the Boil stage's
+         continuous countdown. Separate from #brew-warning (connection
+         loss) so the two can never clobber each other if both happen to
+         be relevant at once. -->
+    <div class="brew-hop-alert" id="brew-hop-alert" style="display:none">
+      <span id="brew-hop-alert-text"></span>
+      <button class="brew-hop-alert-dismiss" onclick="dismissBrewHopAlert()">Dismiss</button>
     </div>
 
     <div class="brew-graph-wrap">
@@ -1360,6 +1392,9 @@ const brewConfirmBtnEl = document.getElementById('brew-confirm-btn');
 const brewGraphCanvasEl = document.getElementById('brew-graph');
 const brewWarningEl = document.getElementById('brew-warning');
 const brewWarningTextEl = document.getElementById('brew-warning-text');
+const brewTempLabelEl = document.getElementById('brew-temp-label');
+const brewHopAlertEl = document.getElementById('brew-hop-alert');
+const brewHopAlertTextEl = document.getElementById('brew-hop-alert-text');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
@@ -1645,7 +1680,105 @@ const STAGES = {
     nextName: 'Boil',
     steps: [], // replaced per-brew by buildMashSteps() - see dough_in above
   },
+
+  // ── Boil ── architecturally different from Mash Steps on purpose: not
+  // a sequence of discrete heat/hold/confirm steps, but ONE continuous
+  // countdown (the recipe's total boil time) with hop-addition alerts
+  // firing at specific points inside it, which never pause or affect the
+  // countdown. Heat-to-boiling and the final "boil complete" confirm
+  // still reuse the same generic step shape as every other stage; only
+  // the middle 'boiling' step is its own dedicated mechanism (isBoilTimer
+  // - see handleBrewManual() below), not the mash_timer/isTimer shape,
+  // since concurrent hop alerts don't fit "wait, then advance."
+  boil: {
+    name: 'Boil',
+    nextName: 'Whirlpool',
+    // PT100 B / SSR2 - see DECISIONS.md's RIMS(SSR1/PT1)/Boil(SSR2/PT2)
+    // pairing. Read by handleBrewManual() for both the temp-hero display
+    // and the heating step's target-reached check below.
+    sensorKey: 'pt2',
+    steps: [
+      {
+        id: 'heating',
+        audio: 'boil_heating',
+        message: 'Starting heating to boiling point...',
+        confirmLabel: null,
+        autoAdvanceOnTemp: true,
+        onEnter: () => {
+          brewTargetReached = false;
+          brewTargetSetpoint = BOIL_POINT_C;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send('start_boil_control:' + BOIL_POINT_C.toFixed(1));
+          }
+          brewHeatingArmed = true;
+          brewHeatingArmedAt = Date.now();
+        },
+      },
+      {
+        // Never auto-started from the temp reading alone - a thermometer
+        // says "hot enough," not "actually at a rolling boil"; that's a
+        // visual call only the brewer can make. Heating (start_boil_control
+        // sent above) is left running through this prompt - the element
+        // must keep holding boiling point while the brewer looks, not
+        // idle and drift down.
+        id: 'confirm_start',
+        audio: 'boil_confirm_prompt',
+        message: 'Boiling point reached. Please confirm the boil has started.',
+        confirmLabel: 'Confirm Boiling Started',
+        onConfirm: () => advanceBrewStep(2),
+      },
+      {
+        id: 'boiling',
+        confirmLabel: null,
+        isBoilTimer: true,
+        onEnter: () => {
+          const totalMin = isNum(currentRecipe.boil_time_min) ? currentRecipe.boil_time_min : 60;
+          brewBoilRemainingSec = Math.round(totalMin * 60);
+          brewBoilHopAlerts = buildBoilHopAlerts(currentRecipe.hops || []);
+        },
+      },
+      {
+        id: 'complete',
+        audio: 'boil_complete',
+        message: 'Boil time complete.',
+        confirmLabel: 'Next Stage →',
+        onConfirm: () => {
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_boil_control');
+          brewHeatingArmed = false;
+          advanceToNextStage();
+        },
+      },
+    ],
+  },
 };
+
+// No boiling-point constant existed anywhere in this codebase before this
+// stage (checked, not assumed) - 100C is the standard sane default at sea
+// level, but flagged here deliberately since nobody has confirmed it
+// against this rig/altitude. Swap this one constant if that ever matters.
+const BOIL_POINT_C = 100;
+
+// recipe.hops entries with use='Boil' each carry a time_min = minutes
+// remaining in the boil when they go in (real field names, verified
+// against mapHopRow() - not re-guessed). Grouped by identical time so
+// multiple hops due at the same point become one alert, not several, per
+// the spec. Sorted descending by remaining-time so the boiling step's
+// tick logic (countdown only ever decreases) can just always look at
+// alerts[0] and shift() it off once fired.
+function buildBoilHopAlerts(hops) {
+  const boilHops = hops.filter((h) => h.use === 'Boil' && isNum(h.time_min));
+  const byTime = new Map();
+  boilHops.forEach((h) => {
+    if (!byTime.has(h.time_min)) byTime.set(h.time_min, []);
+    byTime.get(h.time_min).push(h);
+  });
+  const alerts = Array.from(byTime.entries()).map(([timeMin, hs]) => ({
+    atSec: Math.round(timeMin * 60),
+    label: 'Add hops: ' + hs.map((h) => h.name + (isNum(h.amount_g) ? ' (' + h.amount_g.toFixed(0) + 'g)' : '')).join(', '),
+  }));
+  alerts.sort((a, b) => b.atSec - a.atSec);
+  return alerts;
+}
 
 // One recipe mash step (name/temp_c/time_min - see mapMashStepRow(), the
 // same field names the Recipe Preview screen already uses; not re-guessed
@@ -1703,7 +1836,7 @@ function buildMashSteps(mashSteps) {
       onConfirm: () => {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
         brewHeatingArmed = false;
-        if (isLast) { advanceToNextStage(); } else { advanceBrewStep(currentStepIndex + 1); }
+        if (isLast) { startStage('boil'); } else { advanceBrewStep(currentStepIndex + 1); }
       },
     });
   });
@@ -1732,6 +1865,14 @@ let currentStepIndex = 0;
 let brewTargetSetpoint = null;
 let brewTargetReached = false;
 let brewCountdownSec = null; // null = no timer running in the current step
+
+// Boil's own continuous countdown state - deliberately separate from
+// brewCountdownSec above (Mash Steps' per-step hold timer). Mash's timer
+// pauses-by-being-a-single-step; Boil's must keep running underneath hop
+// alerts with nothing else touching it, so giving it its own variable
+// keeps the two mechanisms from ever being confused with each other.
+let brewBoilRemainingSec = null;
+let brewBoilHopAlerts = [];
 
 // True whenever this page has told the ESP32 to hold a target temperature
 // and hasn't itself asked it to stop yet (see the two places that send
@@ -1771,6 +1912,7 @@ function startStage(stageId) {
   brewCountdownSec = null;
   brewHeatingArmed = false; // the new stage's own steps re-arm this if they heat
   dismissBrewWarning();
+  dismissBrewHopAlert();
   const stage = STAGES[stageId];
   brewStageNameEl.textContent = stage.name;
   brewStageNextEl.textContent = 'Next: ' + stage.nextName;
@@ -1786,6 +1928,7 @@ function advanceBrewStep(index) {
   currentStepIndex = index;
   brewCountdownSec = null;
   dismissBrewWarning();
+  dismissBrewHopAlert();
   const step = stage.steps[index];
   if (step.onEnter) step.onEnter();
   renderBrewStep();
@@ -1795,12 +1938,19 @@ function advanceBrewStep(index) {
 function renderBrewStep() {
   const stage = STAGES[currentStageId];
   const step = stage.steps[currentStepIndex];
-  // A timer step's message is built fresh each tick (see tickMashTimer())
-  // to include the live countdown - only set the static text here so the
-  // very first render (before any tick) still shows something sensible.
-  brewMessageEl.textContent = step.isTimer
-    ? step.baseMessage + ' — ' + formatCountdown(brewCountdownSec || 0)
-    : step.message;
+  // Timer-style steps build their message fresh each tick (from
+  // handleBrewManual() below) to include the live countdown - only set
+  // the static/first-render text here. Mash's isTimer and Boil's
+  // isBoilTimer are intentionally separate mechanisms (see the 'boiling'
+  // step's own comment), so each gets its own branch rather than sharing
+  // one that would have to know about both.
+  if (step.isTimer) {
+    brewMessageEl.textContent = step.baseMessage + ' — ' + formatCountdown(brewCountdownSec || 0);
+  } else if (step.isBoilTimer) {
+    brewMessageEl.textContent = 'Boiling — ' + formatCountdown(brewBoilRemainingSec || 0) + ' remaining';
+  } else {
+    brewMessageEl.textContent = step.message;
+  }
   if (step.confirmLabel) {
     brewConfirmBtnEl.textContent = step.confirmLabel;
     brewConfirmBtnEl.style.display = '';
@@ -1851,12 +2001,37 @@ function dismissBrewWarning() {
   brewWarningEl.style.display = 'none';
 }
 
+// Separate element/functions from the connection-warning above on purpose
+// (see the HTML comment by #brew-hop-alert) - a hop addition and a
+// dropped connection are unrelated events that could in principle both be
+// true at once, and must never fight over the same banner.
+function showBrewHopAlert(text) {
+  brewHopAlertTextEl.textContent = text;
+  brewHopAlertEl.style.display = '';
+  playAudioEvent('boil_hop_addition');
+}
+
+function dismissBrewHopAlert() {
+  brewHopAlertEl.style.display = 'none';
+}
+
 function handleBrewManual(m) {
   if (!brewActive) return;
 
-  brewTempValueEl.textContent = isNum(m.pt1) ? m.pt1.toFixed(1) + '°C' : 'ERR';
-  brewPowerValueEl.textContent = m.ssr1 ? 'ON' : 'OFF';
-  brewPowerValueEl.classList.toggle('on', !!m.ssr1);
+  // Which sensor/SSR is "the" one for the hero display and the
+  // heating-step target check depends on the stage: RIMS/PT1/SSR1 for
+  // Water Prep and Mash, Boil/PT2/SSR2 for Boil (STAGES.boil.sensorKey -
+  // see DECISIONS.md's pairing). Defaults to pt1/ssr1 so Water Prep and
+  // Mash (which never set sensorKey) are unaffected.
+  const activeStage = STAGES[currentStageId];
+  const sensorKey = (activeStage && activeStage.sensorKey) || 'pt1';
+  const ssrKey = sensorKey === 'pt2' ? 'ssr2' : 'ssr1';
+  const liveTemp = m[sensorKey];
+
+  brewTempValueEl.textContent = isNum(liveTemp) ? liveTemp.toFixed(1) + '°C' : 'ERR';
+  brewTempLabelEl.textContent = 'CURRENT TEMPERATURE (' + (sensorKey === 'pt2' ? 'PT2' : 'PT1') + ')';
+  brewPowerValueEl.textContent = m[ssrKey] ? 'ON' : 'OFF';
+  brewPowerValueEl.classList.toggle('on', !!m[ssrKey]);
   brewPump1BtnEl.classList.toggle('on', !!m.relay1);
   brewPump1StateEl.textContent = m.relay1 ? 'ON' : 'OFF';
   brewPump2BtnEl.classList.toggle('on', !!m.relay2);
@@ -1865,20 +2040,24 @@ function handleBrewManual(m) {
   pushBrewSample(m.pt1, m.pt2);
 
   // If this page armed heating and hasn't itself asked to stop, but the
-  // ESP32 now reports control_active=false, nothing here caused that - it
-  // can only be main.cpp's own "0 connected clients" safety net (a brief
-  // WS drop/reconnect, e.g. the phone's browser backgrounding). That
-  // failsafe is correct and untouched; this just stops it from being
-  // silent - without it, the countdown below keeps ticking as if
-  // temperature were still being held, with nothing on screen to say
-  // otherwise. The grace window guards a real race: moving from one mash
-  // step's "complete" confirm straight into the next step's heating sends
-  // stop_control then start_control back to back, and the ESP32's echo of
-  // the now-superseded stop_control can arrive after this page has already
+  // ESP32 now reports the relevant control loop inactive, nothing here
+  // caused that - it can only be main.cpp's own "0 connected clients"
+  // safety net (a brief WS drop/reconnect, e.g. the phone's browser
+  // backgrounding). That failsafe is correct and untouched; this just
+  // stops it from being silent - without it, the countdown below keeps
+  // ticking as if temperature were still being held, with nothing on
+  // screen to say otherwise. control_active vs. control_active_boil
+  // depends on the same sensorKey as above (RIMS's loop vs. Boil's - see
+  // DECISIONS.md and runBoilControlLoop() in main.cpp). The grace window
+  // guards a real race: moving from one mash step's "complete" confirm
+  // straight into the next step's heating sends stop_control then
+  // start_control back to back, and the ESP32's echo of the
+  // now-superseded stop_control can arrive after this page has already
   // re-armed for the new step - without the window that stale echo would
   // look identical to a genuine drop (found by testing this fix, not
   // theoretical).
-  if (brewHeatingArmed && !m.control_active &&
+  const controlActiveKey = sensorKey === 'pt2' ? 'control_active_boil' : 'control_active';
+  if (brewHeatingArmed && !m[controlActiveKey] &&
       (Date.now() - brewHeatingArmedAt) > BREW_HEATING_GRACE_MS) {
     brewHeatingArmed = false;
     showBrewWarning('Connection was lost — heating paused.');
@@ -1888,17 +2067,18 @@ function handleBrewManual(m) {
   const step = stage && stage.steps[currentStepIndex];
   if (!step) return;
 
-  // Any step flagged autoAdvanceOnTemp (Water Prep's heating step, each
-  // mash step's heating phase) ends when the live temp reaches the target
-  // that step's onEnter sent via start_control - checked here, not on a
-  // timer. brewTargetReached guards against re-triggering every second
-  // while the bang-bang loop holds temperature steady above target.
-  // Consecutive mash steps at the same temp fall out of this naturally:
-  // the new step's onEnter resets brewTargetReached, and since the live
-  // temp already satisfies the (unchanged) target, the very next tick
-  // advances immediately - no special-casing needed.
+  // Any step flagged autoAdvanceOnTemp (Water Prep's/Boil's heating step,
+  // each mash step's heating phase) ends when the live temp (per
+  // sensorKey above) reaches the target that step's onEnter sent via
+  // start_control/start_boil_control - checked here, not on a timer.
+  // brewTargetReached guards against re-triggering every second while the
+  // bang-bang loop holds temperature steady above target. Consecutive
+  // mash steps at the same temp fall out of this naturally: the new
+  // step's onEnter resets brewTargetReached, and since the live temp
+  // already satisfies the (unchanged) target, the very next tick advances
+  // immediately - no special-casing needed.
   if (step.autoAdvanceOnTemp && !brewTargetReached &&
-      brewTargetSetpoint !== null && isNum(m.pt1) && m.pt1 >= brewTargetSetpoint) {
+      brewTargetSetpoint !== null && isNum(liveTemp) && liveTemp >= brewTargetSetpoint) {
     brewTargetReached = true;
     advanceBrewStep(currentStepIndex + 1);
     return;
@@ -1911,6 +2091,24 @@ function handleBrewManual(m) {
   if (step.isTimer && brewCountdownSec !== null) {
     brewCountdownSec = Math.max(0, brewCountdownSec - 1);
     if (brewCountdownSec <= 0) {
+      advanceBrewStep(currentStepIndex + 1);
+    } else {
+      renderBrewStep();
+    }
+  }
+
+  // Boil's continuous countdown - never paused or blocked by anything
+  // else in this stage, per spec. Hop alerts are purely informational
+  // (see buildBoilHopAlerts()/showBrewHopAlert()) and never touch
+  // brewBoilRemainingSec - alerts is sorted descending by remaining-time,
+  // so checking/shifting alerts[0] each tick processes them in order as
+  // the countdown (which only ever decreases) reaches each threshold.
+  if (step.isBoilTimer && brewBoilRemainingSec !== null) {
+    brewBoilRemainingSec = Math.max(0, brewBoilRemainingSec - 1);
+    while (brewBoilHopAlerts.length && brewBoilRemainingSec <= brewBoilHopAlerts[0].atSec) {
+      showBrewHopAlert(brewBoilHopAlerts.shift().label);
+    }
+    if (brewBoilRemainingSec <= 0) {
       advanceBrewStep(currentStepIndex + 1);
     } else {
       renderBrewStep();
@@ -1932,6 +2130,10 @@ const AUDIO_FILES = {
   mash_step_heating: 'mash_step_heating.mp3',
   mash_step_temp_reached: 'mash_step_temp_reached.mp3',
   mash_step_time_complete: 'mash_step_time_complete.mp3',
+  boil_heating: 'boil_heating.mp3',
+  boil_confirm_prompt: 'boil_confirm_prompt.mp3',
+  boil_hop_addition: 'boil_hop_addition.mp3',
+  boil_complete: 'boil_complete.mp3',
 };
 let brewAudioCtx = null;
 const brewAudioBuffers = {};
