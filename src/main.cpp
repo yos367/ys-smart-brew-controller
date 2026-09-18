@@ -77,10 +77,37 @@
 
 // --- SSR #2 (2026-09-05) --------------------------------------------------
 // Second SSR, direct-drive on GPIO33, same as SSR1 - no opto module, same
-// isolation warning applies. Forced off in setup() and left alone - not
-// part of the Manual/CLEAN control feature. Which physical vessel/element
-// each SSR ends up wired to is still an open decision, not made here.
+// isolation warning applies.
 #define SSR2_PIN        33
+
+// --- SSR-to-element mapping (decided 2026-09-18, see DECISIONS.md) --------
+// SSR1 (GPIO32) = RIMS tube. SSR2 (GPIO33) = Boil kettle. Both SSRs are
+// identical hardware-wise, so this side was arbitrary - what matters is
+// that it's now fixed and every caller goes through setActiveSSR() below,
+// never a raw digitalWrite(SSR_PIN/SSR2_PIN, ...). PT100 A (healthA) is
+// paired with RIMS/SSR1 (it's already the sensor Manual/CLEAN's bang-bang
+// loop uses), PT100 B (healthB) with Boil/SSR2.
+enum ActiveSSR { SSR_NONE, SSR_RIMS, SSR_BOIL };
+ActiveSSR activeSSR = SSR_NONE;
+
+// Hard invariant: SSR1 and SSR2 must never both be energized at once. This
+// is the only function allowed to digitalWrite(SSR_PIN/SSR2_PIN, ...) -
+// every heat-control path (Manual/CLEAN, brew stages) must call this
+// instead of touching the pins directly, so the guarantee holds everywhere,
+// not just in whichever code path someone remembered to write carefully.
+void setActiveSSR(ActiveSSR which) {
+  if (which == SSR_RIMS) {
+    digitalWrite(SSR2_PIN, LOW);
+    digitalWrite(SSR_PIN, HIGH);
+  } else if (which == SSR_BOIL) {
+    digitalWrite(SSR_PIN, LOW);
+    digitalWrite(SSR2_PIN, HIGH);
+  } else {
+    digitalWrite(SSR_PIN, LOW);
+    digitalWrite(SSR2_PIN, LOW);
+  }
+  activeSSR = which;
+}
 
 // --- Relays (2026-09-05) --------------------------------------------------
 // Two relay modules (BESTEP JQC3F-05VDC-C, HIGH-level trigger). Wiring
@@ -498,7 +525,7 @@ void runControlLoop(bool tempFreshA, float tempValueA) {
   if (webSocket.connectedClients() == 0) {
     controlActive = false;
     ssr1On = false;
-    digitalWrite(SSR_PIN, LOW);
+    setActiveSSR(SSR_NONE);
     return;
   }
 
@@ -512,7 +539,7 @@ void runControlLoop(bool tempFreshA, float tempValueA) {
 
   if (wantOn != ssr1On) {
     ssr1On = wantOn;
-    digitalWrite(SSR_PIN, ssr1On ? HIGH : LOW);
+    setActiveSSR(ssr1On ? SSR_RIMS : SSR_NONE);
   }
 }
 
@@ -1104,6 +1131,96 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   }
   .wifi-row-delete:active { transform:scale(0.95); }
   .wifi-connected { color:var(--brand-teal); }
+
+  /* ══ BREW / COOK SCREEN (shown after a recipe is loaded) ══
+     One stage active at a time, driven by the STAGES config in the script
+     below. Water Prep is the only stage implemented so far - the markup
+     and CSS here are generic (temp/graph/power/pumps/stage banner/confirm
+     button), nothing Water-Prep-specific, so future stages reuse it as-is. */
+  #brew-cook {
+    display:none; position:fixed; inset:0;
+    background:var(--bg-primary);
+    flex-direction:column; align-items:center;
+  }
+  #brew-cook.visible { display:flex; animation:menuIn 0.4s ease; }
+
+  .brew-body {
+    width:min(420px,92vw); margin-top:56px;
+    display:flex; flex-direction:column; gap:16px;
+    overflow-y:auto; max-height:calc(100vh - 90px); padding-bottom:20px;
+  }
+
+  .brew-stage-banner {
+    background:var(--panel-bg); border:1px solid var(--border-dim);
+    border-radius:4px; padding:14px 16px; text-align:center;
+  }
+  .brew-stage-name {
+    font-family:'Rajdhani',sans-serif; font-size:20px; font-weight:700;
+    letter-spacing:1px; color:var(--brand-orange); text-transform:uppercase;
+  }
+  .brew-stage-next {
+    font-family:'Share Tech Mono',monospace; font-size:11px;
+    letter-spacing:1px; color:var(--text-dim); margin-top:4px;
+  }
+
+  .brew-temp-hero {
+    background:var(--panel-bg); border:1px solid var(--border-dim);
+    border-radius:4px; padding:20px; text-align:center;
+  }
+  .brew-temp-value {
+    font-family:'Rajdhani',sans-serif; font-size:56px; font-weight:700;
+    color:var(--text-primary); line-height:1;
+  }
+  .brew-temp-label {
+    font-family:'Share Tech Mono',monospace; font-size:10px;
+    letter-spacing:2px; color:var(--text-dimmer); margin-top:6px;
+  }
+
+  .brew-graph-wrap {
+    background:var(--panel-bg); border:1px solid var(--border-dim);
+    border-radius:4px; padding:10px;
+  }
+  #brew-graph { width:100%; height:120px; display:block; }
+  .brew-graph-legend {
+    display:flex; gap:16px; justify-content:center; margin-top:8px;
+    font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px;
+  }
+  .brew-legend-pt1::before, .brew-legend-pt2::before, .brew-legend-target::before {
+    content:''; display:inline-block; width:10px; margin-right:5px; vertical-align:middle;
+  }
+  .brew-legend-pt1 { color:var(--brand-orange); }
+  .brew-legend-pt1::before { height:2px; background:var(--brand-orange); }
+  .brew-legend-pt2 { color:var(--brand-teal); }
+  .brew-legend-pt2::before { height:2px; background:var(--brand-teal); }
+  .brew-legend-target { color:var(--text-dim); }
+  .brew-legend-target::before { border-top:2px dashed var(--text-dim); }
+
+  .brew-power-row {
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--panel-bg); border:1px solid var(--border-dim);
+    border-radius:4px; padding:12px 16px;
+  }
+  .brew-power-label {
+    font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600;
+    color:#ccc; text-transform:uppercase; letter-spacing:1px;
+  }
+  .brew-power-value {
+    font-family:'Share Tech Mono',monospace; font-size:14px; font-weight:700;
+    color:var(--text-dim); letter-spacing:1px;
+  }
+  .brew-power-value.on { color:var(--brand-teal); }
+
+  .brew-message {
+    font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:600;
+    color:var(--text-primary); text-align:center; padding:4px 8px;
+  }
+
+  .brew-confirm-btn { padding:16px; font-size:15px; }
+
+  .brew-stub-msg {
+    font-family:'Share Tech Mono',monospace; font-size:13px;
+    color:var(--text-dim); text-align:center; padding:20px;
+  }
 </style>
 </head>
 <body>
@@ -1456,7 +1573,70 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
         <button class="timer-btn" onclick="saveCurrentRecipe()">Save</button>
         <div class="import-status" id="save-status"></div>
       </div>
+
+      <!-- Always shown regardless of mode (import or load) - both a
+           freshly-imported and a previously-saved recipe are brewable. -->
+      <div class="import-save-row">
+        <button class="timer-btn" onclick="startBrewing()">Start Brewing &rarr;</button>
+      </div>
     </div>
+  </div>
+</div>
+
+<!-- ══ BREW / COOK SCREEN ══ (see stage engine in the script below - Water
+     Prep is the only implemented stage; this markup is generic on purpose
+     so the next stage reuses it without new HTML) -->
+<div id="brew-cook">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitBrewCook()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="brew-body">
+    <div class="brew-stage-banner">
+      <div class="brew-stage-name" id="brew-stage-name">--</div>
+      <div class="brew-stage-next" id="brew-stage-next">--</div>
+    </div>
+
+    <div class="brew-temp-hero">
+      <div class="brew-temp-value" id="brew-temp-value">--</div>
+      <div class="brew-temp-label">CURRENT TEMPERATURE (PT1)</div>
+    </div>
+
+    <div class="brew-graph-wrap">
+      <canvas id="brew-graph"></canvas>
+      <div class="brew-graph-legend">
+        <span class="brew-legend-pt1">PT1</span>
+        <span class="brew-legend-pt2">PT2</span>
+        <span class="brew-legend-target">TARGET</span>
+      </div>
+    </div>
+
+    <div class="brew-power-row">
+      <div class="brew-power-label">Heating Element</div>
+      <div class="brew-power-value" id="brew-power-value">OFF</div>
+    </div>
+
+    <div class="pump-row">
+      <div class="pump-btn" id="brew-pump1-btn" onclick="togglePump(1)">
+        <div class="pump-btn-label">Pump 1</div>
+        <div class="pump-btn-state" id="brew-pump1-state">OFF</div>
+      </div>
+      <div class="pump-btn" id="brew-pump2-btn" onclick="togglePump(2)">
+        <div class="pump-btn-label">Pump 2</div>
+        <div class="pump-btn-state" id="brew-pump2-state">OFF</div>
+      </div>
+    </div>
+
+    <div class="brew-message" id="brew-message">--</div>
+
+    <button class="control-btn brew-confirm-btn" id="brew-confirm-btn" onclick="confirmBrewStep()" style="display:none">Confirm</button>
   </div>
 </div>
 
@@ -1691,6 +1871,19 @@ const brewfatherSettingsStatusEl = document.getElementById('brewfather-settings-
 const brewfatherListStatusEl = document.getElementById('brewfather-list-status');
 const brewfatherListItemsEl = document.getElementById('brewfather-list-items');
 
+const brewCookEl = document.getElementById('brew-cook');
+const brewStageNameEl = document.getElementById('brew-stage-name');
+const brewStageNextEl = document.getElementById('brew-stage-next');
+const brewTempValueEl = document.getElementById('brew-temp-value');
+const brewPowerValueEl = document.getElementById('brew-power-value');
+const brewPump1BtnEl = document.getElementById('brew-pump1-btn');
+const brewPump1StateEl = document.getElementById('brew-pump1-state');
+const brewPump2BtnEl = document.getElementById('brew-pump2-btn');
+const brewPump2StateEl = document.getElementById('brew-pump2-state');
+const brewMessageEl = document.getElementById('brew-message');
+const brewConfirmBtnEl = document.getElementById('brew-confirm-btn');
+const brewGraphCanvasEl = document.getElementById('brew-graph');
+
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
 
@@ -1825,6 +2018,10 @@ function handleManual(m) {
   heatControlActive = !!m.control_active;
   updateControlUI(manualSetpointInput, manualControlBtn, manualControlStatus, m);
   updateControlUI(cleanSetpointInput, cleanControlBtn, cleanControlStatus, m);
+
+  // Same always-broadcast model as everything above - harmless to call
+  // while the brew-cook screen isn't visible, matching Manual/CLEAN.
+  handleBrewManual(m);
 }
 
 function updateControlUI(inputEl, btnEl, statusEl, m) {
@@ -1878,6 +2075,314 @@ function exitClean() {
   cleanEl.classList.remove('visible');
   menuEl.classList.add('visible');
 }
+
+// ══ BREW / COOK SCREEN (first pass: Water Prep only) ══
+// Shown after a recipe is loaded - the existing Recipe Preview screen
+// already serves as the confirmation step, so there is no separate one
+// here. One stage is active at a time; each stage is an ordered list of
+// steps (a prompt/message, an optional audio clip, and either a manual
+// confirm action or nothing - waits on live temp instead). This is
+// deliberately generic: Water Prep is implemented as an ordinary entry in
+// STAGES, not a special case, so the next stage plugs in the same way.
+//
+// Heating reuses the exact same "start_control"/"stop_control" WS commands
+// as Manual/CLEAN (see toggleControl() above) - the server doesn't know or
+// care which screen asked, only that SSR1/RIMS is the one it drives (see
+// DECISIONS.md and setActiveSSR() in main.cpp). Pump buttons reuse the
+// same toggle1/toggle2 commands too - manual on/off only, no automatic tie
+// to heating, by design (full trust in the user, not an oversight).
+const STAGES = {
+  water_prep: {
+    name: 'Water Prep',
+    nextName: 'Mash',
+    steps: [
+      {
+        id: 'fill',
+        audio: 'water_prep_fill',
+        message: 'Fill vessel with water.',
+        confirmLabel: 'Water Filled — Start Heating',
+        onConfirm: () => {
+          brewTargetSetpoint = getWaterPrepTargetTemp();
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send('start_control:' + brewTargetSetpoint.toFixed(1));
+          }
+          advanceBrewStep(1);
+        },
+      },
+      {
+        id: 'heating',
+        audio: 'water_prep_heating',
+        // No confirmLabel - this step never shows the confirm button and
+        // never advances itself. handleBrewManual() below watches the live
+        // temperature and calls advanceBrewStep(2) once the target is
+        // reached - reaching temperature is not "stage advance" and must
+        // never need a click, but it also isn't a click itself.
+        message: 'Starting heating to strike temperature...',
+        confirmLabel: null,
+      },
+      {
+        id: 'ready',
+        audio: 'water_prep_ready',
+        message: 'Water is ready.',
+        confirmLabel: 'Next Stage →',
+        onConfirm: () => {
+          // Always explicit: never leave heating running into a stage that
+          // hasn't decided what it wants yet, even though bang-bang would
+          // hold steady on its own.
+          if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
+          advanceToNextStage();
+        },
+      },
+    ],
+  },
+};
+
+// Placeholder strike-temp estimate: the first mash step's own target temp,
+// which is real recipe data already on hand - not a guessed number, but
+// also not real strike-temp science (grain absorption, mash-tun thermal
+// mass). Swap this out once that calculation exists; nothing else in the
+// stage engine needs to change when it does.
+function getWaterPrepTargetTemp() {
+  const steps = currentRecipe && currentRecipe.mash_steps;
+  if (steps && steps.length && isNum(steps[0].temp_c)) return steps[0].temp_c;
+  return 70;
+}
+
+let brewActive = false;
+let currentStageId = null;
+let currentStepIndex = 0;
+let brewTargetSetpoint = null;
+let brewTargetReached = false;
+
+function startBrewing() {
+  if (!currentRecipe) return;
+  unlockBrewAudio();
+  brewActive = true;
+  resetBrewGraph();
+  importRecipeEl.classList.remove('visible');
+  enterBrewCook();
+  startStage('water_prep');
+}
+
+function startStage(stageId) {
+  currentStageId = stageId;
+  currentStepIndex = 0;
+  brewTargetReached = false;
+  const stage = STAGES[stageId];
+  brewStageNameEl.textContent = stage.name;
+  brewStageNextEl.textContent = 'Next: ' + stage.nextName;
+  renderBrewStep();
+  playAudioEvent(stage.steps[0].audio);
+}
+
+function advanceBrewStep(index) {
+  const stage = STAGES[currentStageId];
+  if (!stage || index >= stage.steps.length) return;
+  currentStepIndex = index;
+  renderBrewStep();
+  playAudioEvent(stage.steps[index].audio);
+}
+
+function renderBrewStep() {
+  const stage = STAGES[currentStageId];
+  const step = stage.steps[currentStepIndex];
+  brewMessageEl.textContent = step.message;
+  if (step.confirmLabel) {
+    brewConfirmBtnEl.textContent = step.confirmLabel;
+    brewConfirmBtnEl.style.display = '';
+  } else {
+    brewConfirmBtnEl.style.display = 'none';
+  }
+}
+
+function confirmBrewStep() {
+  const stage = STAGES[currentStageId];
+  const step = stage.steps[currentStepIndex];
+  if (step.onConfirm) step.onConfirm();
+}
+
+function advanceToNextStage() {
+  // Stub - only Water Prep exists so far, per the step-by-step plan. A
+  // real next stage replaces this with its own startStage(...) call.
+  brewStageNameEl.textContent = STAGES[currentStageId].nextName;
+  brewStageNextEl.textContent = '--';
+  brewMessageEl.textContent = 'Next stage coming soon.';
+  brewConfirmBtnEl.style.display = 'none';
+}
+
+function enterBrewCook() {
+  menuEl.classList.remove('visible');
+  brewCookEl.classList.add('visible');
+  resizeBrewGraph();
+}
+
+function exitBrewCook() {
+  // Leaving this screen must never leave heating running unsupervised -
+  // the WebSocket itself staying open (same page, different screen) would
+  // NOT trip the "0 connected clients" safety net in main.cpp, so this has
+  // to be explicit.
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
+  brewActive = false;
+  brewCookEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+}
+
+function handleBrewManual(m) {
+  if (!brewActive) return;
+
+  brewTempValueEl.textContent = isNum(m.pt1) ? m.pt1.toFixed(1) + '°C' : 'ERR';
+  brewPowerValueEl.textContent = m.ssr1 ? 'ON' : 'OFF';
+  brewPowerValueEl.classList.toggle('on', !!m.ssr1);
+  brewPump1BtnEl.classList.toggle('on', !!m.relay1);
+  brewPump1StateEl.textContent = m.relay1 ? 'ON' : 'OFF';
+  brewPump2BtnEl.classList.toggle('on', !!m.relay2);
+  brewPump2StateEl.textContent = m.relay2 ? 'ON' : 'OFF';
+
+  pushBrewSample(m.pt1, m.pt2);
+
+  // Water Prep's "heating" step ends when the target is reached - checked
+  // here (live temp data), not on a timer, and only fires once per stage
+  // (brewTargetReached guards against re-triggering every second while
+  // the bang-bang loop holds temperature steady above target).
+  if (!brewTargetReached && currentStageId === 'water_prep' && currentStepIndex === 1 &&
+      brewTargetSetpoint !== null && isNum(m.pt1) && m.pt1 >= brewTargetSetpoint) {
+    brewTargetReached = true;
+    advanceBrewStep(2);
+  }
+}
+
+// ── Audio (see stage README / recipe-display work) ──────────────────────
+// Pre-recorded clips only, played via the Web Audio API - never live TTS
+// in the browser. Generic filename lookup so adding a clip for a future
+// stage is: drop the mp3 in web/audio/, add one line to AUDIO_FILES, done.
+// TODO: buzzer support when hardware available - this only ever plays
+// through the browser tab, there is no physical alert yet.
+const AUDIO_FILES = {
+  water_prep_fill: 'water_prep_fill.mp3',
+  water_prep_heating: 'water_prep_heating.mp3',
+  water_prep_ready: 'water_prep_ready.mp3',
+};
+let brewAudioCtx = null;
+const brewAudioBuffers = {};
+
+// Browsers block audio until a real user gesture unlocks the AudioContext.
+// Called from startBrewing(), itself only ever reached via the "Start
+// Brewing" button click - so this always runs inside a genuine gesture,
+// even though the clips it later plays are triggered by WS data, not
+// clicks.
+function unlockBrewAudio() {
+  if (!brewAudioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    brewAudioCtx = new Ctx();
+  }
+  if (brewAudioCtx.state === 'suspended') brewAudioCtx.resume();
+}
+
+async function playAudioEvent(eventName) {
+  const filename = AUDIO_FILES[eventName];
+  if (!filename || !brewAudioCtx) return;
+  try {
+    let buffer = brewAudioBuffers[eventName];
+    if (!buffer) {
+      const resp = await fetch('/audio?file=' + encodeURIComponent(filename));
+      if (!resp.ok) return;
+      const arrayBuf = await resp.arrayBuffer();
+      buffer = await brewAudioCtx.decodeAudioData(arrayBuf);
+      brewAudioBuffers[eventName] = buffer;
+    }
+    const src = brewAudioCtx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(brewAudioCtx.destination);
+    src.start(0);
+  } catch (e) {
+    // A missing/corrupt clip must never block the brew flow itself.
+  }
+}
+
+// ── Live temperature graph (plain canvas, no library - this page has no
+// internet access to fetch one from, see the embedded-fonts note above) ──
+const BREW_GRAPH_MAX_SAMPLES = 300; // ~5 minutes at one sample/second
+let brewGraphSamples = []; // [{t, pt1, pt2}]
+
+function resetBrewGraph() {
+  brewGraphSamples = [];
+  renderBrewGraph();
+}
+
+function pushBrewSample(pt1, pt2) {
+  brewGraphSamples.push({
+    t: Date.now(),
+    pt1: isNum(pt1) ? pt1 : null,
+    pt2: isNum(pt2) ? pt2 : null,
+  });
+  if (brewGraphSamples.length > BREW_GRAPH_MAX_SAMPLES) brewGraphSamples.shift();
+  renderBrewGraph();
+}
+
+function resizeBrewGraph() {
+  const rect = brewGraphCanvasEl.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  brewGraphCanvasEl.width = Math.max(1, Math.round(rect.width * dpr));
+  brewGraphCanvasEl.height = Math.max(1, Math.round(rect.height * dpr));
+  renderBrewGraph();
+}
+
+function renderBrewGraph() {
+  const ctx = brewGraphCanvasEl.getContext('2d');
+  const w = brewGraphCanvasEl.width, h = brewGraphCanvasEl.height;
+  ctx.clearRect(0, 0, w, h);
+  if (w === 0 || h === 0) return;
+
+  const values = [];
+  for (const s of brewGraphSamples) {
+    if (s.pt1 !== null) values.push(s.pt1);
+    if (s.pt2 !== null) values.push(s.pt2);
+  }
+  if (brewTargetSetpoint !== null) values.push(brewTargetSetpoint);
+  if (values.length < 2) return;
+
+  const margin = 6 * (window.devicePixelRatio || 1);
+  let lo = Math.min(...values) - 1, hi = Math.max(...values) + 1;
+  if (hi - lo < 2) { hi += 1; lo -= 1; }
+  const y = (v) => h - margin - ((v - lo) / (hi - lo)) * (h - margin * 2);
+  const x = (i) => margin + (i / (BREW_GRAPH_MAX_SAMPLES - 1)) * (w - margin * 2);
+  const n = brewGraphSamples.length;
+  const startIdx = BREW_GRAPH_MAX_SAMPLES - n;
+
+  const drawLine = (key, color) => {
+    ctx.beginPath();
+    let started = false;
+    brewGraphSamples.forEach((s, i) => {
+      const v = s[key];
+      if (v === null) { started = false; return; }
+      const px = x(startIdx + i), py = y(v);
+      if (!started) { ctx.moveTo(px, py); started = true; } else { ctx.lineTo(px, py); }
+    });
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2 * (window.devicePixelRatio || 1);
+    ctx.stroke();
+  };
+
+  if (brewTargetSetpoint !== null) {
+    ctx.beginPath();
+    ctx.setLineDash([5, 5]);
+    const ty = y(brewTargetSetpoint);
+    ctx.moveTo(margin, ty);
+    ctx.lineTo(w - margin, ty);
+    ctx.strokeStyle = '#888888';
+    ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  drawLine('pt1', '#f5941f');
+  drawLine('pt2', '#2a9d9d');
+}
+
+window.addEventListener('resize', () => {
+  if (brewCookEl.classList.contains('visible')) resizeBrewGraph();
+});
 
 // Timer is pure client-side (setInterval) per spec - the ESP32 does not
 // know about it at all. Resets on page reload; that is accepted for this
@@ -6631,6 +7136,31 @@ void handleLogoTopbar() {
   server.send_P(200, "image/png", (const char *)LOGO_TOPBAR_PNG, LOGO_TOPBAR_PNG_LEN);
 }
 
+// --- Brew stage audio clips --------------------------------------------
+// Same reasoning as the logos above: no filesystem-backed static assets in
+// this project (see DECISIONS.md), so pre-recorded stage-alert mp3s are
+// baked into main.cpp as PROGMEM byte arrays by scripts/embed_audio.py,
+// which regenerates the block below from every file in web/audio/. Adding
+// a new clip is: drop the mp3 in web/audio/, rerun the script, rebuild -
+// no new C++ route or handler needed, handleAudioFile() below serves any
+// of them by filename already.
+struct AudioClip { const char *filename; const uint8_t *data; size_t len; };
+// AUDIO_ARRAYS_START (generated by scripts/embed_audio.py - do not hand-edit)
+const AudioClip AUDIO_CLIPS[1] = { {"", nullptr, 0} };
+const size_t AUDIO_CLIPS_COUNT = 0;
+// AUDIO_ARRAYS_END
+
+void handleAudioFile() {
+  String filename = server.arg("file");
+  for (size_t i = 0; i < AUDIO_CLIPS_COUNT; i++) {
+    if (filename == AUDIO_CLIPS[i].filename) {
+      server.send_P(200, "audio/mpeg", (const char *)AUDIO_CLIPS[i].data, AUDIO_CLIPS[i].len);
+      return;
+    }
+  }
+  server.send(404, "text/plain", "audio clip not found");
+}
+
 // ==========================================================================
 // Save/Load Recipe (see save-and-load-recipe-spec.md) - the ESP32 stores
 // and returns the recipe JSON as an opaque blob, exactly as the browser
@@ -7500,13 +8030,13 @@ void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length
         controlSetpoint = msg.substring(String("start_control:").length()).toFloat();
         controlActive = true;
         ssr1On = false;
-        digitalWrite(SSR_PIN, LOW);
+        setActiveSSR(SSR_NONE);
         String manualJson = buildManualJson();
         webSocket.broadcastTXT(manualJson);
       } else if (msg == "stop_control") {
         controlActive = false;
         ssr1On = false;
-        digitalWrite(SSR_PIN, LOW);
+        setActiveSSR(SSR_NONE);
         String manualJson = buildManualJson();
         webSocket.broadcastTXT(manualJson);
       }
@@ -7680,13 +8210,12 @@ void setup() {
 
   // Both SSRs forced off before anything else, including anything below
   // that could hang (I2C scan on a stuck bus, e.g.) - a hang must never
-  // leave either one live. SSR1 only turns on again once a client sends
-  // "start_control" and the bang-bang loop in loop() decides to; SSR2
-  // is not part of this feature and nothing ever drives it after this.
+  // leave either one live. Pins are configured directly here (setActiveSSR
+  // assumes OUTPUT mode is already set); after this, every SSR write goes
+  // through setActiveSSR(), never a raw digitalWrite on these two pins.
   pinMode(SSR_PIN, OUTPUT);
-  digitalWrite(SSR_PIN, LOW); // LOW = SSR off, direct-drive, normal polarity
   pinMode(SSR2_PIN, OUTPUT);
-  digitalWrite(SSR2_PIN, LOW);
+  setActiveSSR(SSR_NONE); // LOW = SSR off, direct-drive, normal polarity
   pinMode(RELAY1_PIN, OUTPUT);
   pinMode(RELAY2_PIN, OUTPUT);
   // 2026-09-05: latched off permanently, not just at boot. Wiring already
@@ -7790,6 +8319,7 @@ void setup() {
   server.on("/", handleRoot);
   server.on("/ys-logo-full.png", handleLogoFull);
   server.on("/ys-logo-topbar.png", handleLogoTopbar);
+  server.on("/audio", HTTP_GET, handleAudioFile);
   server.on("/save_recipe", HTTP_POST, handleSaveRecipe);
   server.on("/list_recipes", HTTP_GET, handleListRecipes);
   server.on("/load_recipe", HTTP_GET, handleLoadRecipe);
