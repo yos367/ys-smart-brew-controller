@@ -651,6 +651,30 @@
   }
   .brew-hop-alert-dismiss:active { transform:scale(0.95); }
 
+  .brew-hopstand {
+    background:var(--panel-bg); border:1px solid var(--border-dim);
+    border-radius:4px; padding:12px 14px;
+  }
+  .brew-hopstand-title {
+    font-family:'Share Tech Mono',monospace; font-size:10px;
+    letter-spacing:2px; color:var(--text-dimmer); text-transform:uppercase;
+    margin-bottom:8px;
+  }
+  .brew-hopstand-row {
+    display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+    padding:6px 0; border-top:1px solid var(--border-dim);
+  }
+  .brew-hopstand-row:first-child { border-top:none; }
+  .brew-hopstand-name {
+    font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:600;
+    color:var(--text-primary); overflow-wrap:anywhere;
+  }
+  .brew-hopstand-amt { color:var(--text-dim); font-weight:500; margin-left:6px; }
+  .brew-hopstand-temp {
+    font-family:'Share Tech Mono',monospace; font-size:15px; font-weight:700;
+    color:var(--brand-orange); white-space:nowrap;
+  }
+
   .brew-temp-hero {
     background:var(--panel-bg); border:1px solid var(--border-dim);
     border-radius:4px; padding:20px; text-align:center;
@@ -1107,6 +1131,15 @@
       <div class="brew-temp-label" id="brew-temp-label">CURRENT TEMPERATURE (PT1)</div>
     </div>
 
+    <!-- Whirlpool only, and only when the recipe has hop-stand hops -
+         otherwise stays hidden (no empty section, no placeholder). Purely
+         informational: no timer or detection, the brewer compares the live
+         temp above to each hop's listed temp by eye. -->
+    <div class="brew-hopstand" id="brew-hopstand" style="display:none">
+      <div class="brew-hopstand-title">Hop Stand Additions</div>
+      <div id="brew-hopstand-list"></div>
+    </div>
+
     <!-- Hidden by default - hop-addition alerts during the Boil stage's
          continuous countdown. Separate from #brew-warning (connection
          loss) so the two can never clobber each other if both happen to
@@ -1395,6 +1428,8 @@ const brewWarningTextEl = document.getElementById('brew-warning-text');
 const brewTempLabelEl = document.getElementById('brew-temp-label');
 const brewHopAlertEl = document.getElementById('brew-hop-alert');
 const brewHopAlertTextEl = document.getElementById('brew-hop-alert-text');
+const brewHopstandEl = document.getElementById('brew-hopstand');
+const brewHopstandListEl = document.getElementById('brew-hopstand-list');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
@@ -1769,6 +1804,7 @@ const STAGES = {
         audio: 'whirlpool_start',
         message: 'Start the whirlpool now using the pump button.',
         confirmLabel: 'Whirlpool Done — Continue',
+        onEnter: () => renderHopstandHops(),
         onConfirm: () => startStage('chill'),
       },
     ],
@@ -1974,6 +2010,7 @@ function startStage(stageId) {
   brewHeatingArmed = false; // the new stage's own steps re-arm this if they heat
   dismissBrewWarning();
   dismissBrewHopAlert();
+  hideHopstandHops();
   const stage = STAGES[stageId];
   brewStageNameEl.textContent = stage.name;
   brewStageNextEl.textContent = stage.nextName ? 'Next: ' + stage.nextName : '';
@@ -2047,6 +2084,43 @@ function exitBrewCook() {
   brewActive = false;
   brewCookEl.classList.remove('visible');
   menuEl.classList.add('visible');
+}
+
+// Whirlpool's hop-stand list: name, amount, target temp - hottest first,
+// since the wort cools through them in that order. Informational only (no
+// timer, no detection of "temp reached for this hop"). Hidden entirely
+// when the recipe has none, so a recipe without a hop stand looks exactly
+// like the Whirlpool screen did before this existed.
+function renderHopstandHops() {
+  const hops = ((currentRecipe && currentRecipe.hops) || [])
+    .filter(isHopstandHop)
+    .sort((a, b) => b.temperature_c - a.temperature_c);
+  brewHopstandListEl.textContent = '';
+  if (!hops.length) { brewHopstandEl.style.display = 'none'; return; }
+  hops.forEach((h) => {
+    const row = document.createElement('div');
+    row.className = 'brew-hopstand-row';
+    const name = document.createElement('div');
+    name.className = 'brew-hopstand-name';
+    name.textContent = h.name || 'Hop';
+    if (isNum(h.amount_g)) {
+      const amt = document.createElement('span');
+      amt.className = 'brew-hopstand-amt';
+      amt.textContent = h.amount_g.toFixed(0) + ' g';
+      name.appendChild(amt);
+    }
+    const temp = document.createElement('div');
+    temp.className = 'brew-hopstand-temp';
+    temp.textContent = '@ ' + h.temperature_c.toFixed(0) + '°C';
+    row.appendChild(name);
+    row.appendChild(temp);
+    brewHopstandListEl.appendChild(row);
+  });
+  brewHopstandEl.style.display = '';
+}
+
+function hideHopstandHops() {
+  brewHopstandEl.style.display = 'none';
 }
 
 function showBrewWarning(text) {
@@ -2588,6 +2662,15 @@ function mapMashStepRow(s) {
 // - Aroma with a TEMPERATURE (hopstand): name becomes "{NAME} {ALPHA}%
 //   hopstand @ {TEMP}°C", "{TIME} min" over "Aroma"
 // - Dry Hop: TIME (minutes) -> days (TIME/1440), "day {N}" over "Dry Hop"
+// The one definition of "hop-stand hop": an Aroma addition that carries a
+// temperature. Shared by Recipe Preview (mapHopRow below) and the brew
+// screen's Whirlpool stage (renderHopstandHops()) so the two can never
+// disagree about which hops count. An Aroma hop with no temperature is not
+// a hop stand by this definition and stays a plain row.
+function isHopstandHop(h) {
+  return h.use === 'Aroma' && isNum(h.temperature_c);
+}
+
 function mapHopRow(h, batchSizeL) {
   const gPerL = batchSizeL > 0 && isNum(h.amount_g) ? (h.amount_g / batchSizeL).toFixed(2) + ' g/L' : '';
   const use = h.use || '';
@@ -2595,7 +2678,7 @@ function mapHopRow(h, batchSizeL) {
     const days = isNum(h.time_min) ? Math.round(h.time_min / 1440) : null;
     return { amt: gPerL, name: h.name, val: days !== null ? 'day ' + days : '', detailLeft: '', detailRight: use };
   }
-  if (use === 'Aroma' && isNum(h.temperature_c)) {
+  if (isHopstandHop(h)) {
     const name = h.name + (isNum(h.alpha) ? ' ' + h.alpha + '%' : '') + ' hopstand @ ' + h.temperature_c.toFixed(0) + '°C';
     return { amt: gPerL, name: name, val: isNum(h.time_min) ? h.time_min.toFixed(0) + ' min' : '', detailLeft: '', detailRight: use };
   }
