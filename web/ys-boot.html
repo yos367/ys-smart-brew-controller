@@ -1745,8 +1745,68 @@ const STAGES = {
         onConfirm: () => {
           if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_boil_control');
           brewHeatingArmed = false;
-          advanceToNextStage();
+          startStage('whirlpool');
         },
+      },
+    ],
+  },
+
+  // ── Whirlpool ── no ESP32 control at all: the boil kettle's own pump
+  // (the same single pump that circulates the boil) doubles as whirlpool
+  // circulation - a physical/plumbing fact the ESP32 doesn't need to know
+  // about, so this stage just prompts the user to use the existing pump
+  // button. No timer, no target, no auto-advance: the brewer judges by
+  // eye when it's done and confirms manually. PT2 (the kettle probe) stays
+  // on the temp-hero so the temperature drop during the hop stand is
+  // visible. Boil's complete step already stopped heating before this.
+  whirlpool: {
+    name: 'Whirlpool',
+    nextName: 'Chill',
+    sensorKey: 'pt2',
+    steps: [
+      {
+        id: 'whirlpool',
+        audio: 'whirlpool_start',
+        message: 'Start the whirlpool now using the pump button.',
+        confirmLabel: 'Whirlpool Done — Continue',
+        onConfirm: () => startStage('chill'),
+      },
+    ],
+  },
+
+  // ── Chill ── observe-only: cooling is external/passive (immersion or
+  // plate chiller, not ESP32-controlled), so no control loop is started
+  // and there is deliberately no automatic threshold detection - the
+  // brewer confirms when pitching temperature is reached.
+  chill: {
+    name: 'Chill',
+    nextName: 'Brew day complete',
+    sensorKey: 'pt2',
+    steps: [
+      {
+        id: 'chill',
+        audio: 'chill_start',
+        message: 'External cooling in progress. Confirm once your target temperature is reached.',
+        confirmLabel: 'Target Reached — Continue',
+        onConfirm: () => startStage('brew_complete'),
+      },
+    ],
+  },
+
+  // ── Brew day complete ── intentional end of this controller's flow, not
+  // a placeholder: fermentation is handled by a separate fermentation-
+  // chamber controller, so this device's job ends at chilled wort ready
+  // to transfer. No confirm button, nothing further to advance to.
+  brew_complete: {
+    name: 'Brew Day Complete',
+    nextName: null,
+    sensorKey: 'pt2',
+    steps: [
+      {
+        id: 'complete',
+        audio: 'brew_day_complete',
+        message: 'Brew day complete.',
+        confirmLabel: null,
       },
     ],
   },
@@ -1909,13 +1969,14 @@ function startStage(stageId) {
   currentStageId = stageId;
   currentStepIndex = 0;
   brewTargetReached = false;
+  brewTargetSetpoint = null; // no stale target line from the previous stage; heating steps set their own in onEnter
   brewCountdownSec = null;
   brewHeatingArmed = false; // the new stage's own steps re-arm this if they heat
   dismissBrewWarning();
   dismissBrewHopAlert();
   const stage = STAGES[stageId];
   brewStageNameEl.textContent = stage.name;
-  brewStageNextEl.textContent = 'Next: ' + stage.nextName;
+  brewStageNextEl.textContent = stage.nextName ? 'Next: ' + stage.nextName : '';
   const step = stage.steps[0];
   if (step.onEnter) step.onEnter();
   renderBrewStep();
@@ -1963,15 +2024,6 @@ function confirmBrewStep() {
   const stage = STAGES[currentStageId];
   const step = stage.steps[currentStepIndex];
   if (step.onConfirm) step.onConfirm();
-}
-
-function advanceToNextStage() {
-  // Stub - only Water Prep exists so far, per the step-by-step plan. A
-  // real next stage replaces this with its own startStage(...) call.
-  brewStageNameEl.textContent = STAGES[currentStageId].nextName;
-  brewStageNextEl.textContent = '--';
-  brewMessageEl.textContent = 'Next stage coming soon.';
-  brewConfirmBtnEl.style.display = 'none';
 }
 
 function enterBrewCook() {
@@ -2139,6 +2191,9 @@ const AUDIO_FILES = {
   boil_confirm_prompt: 'boil_confirm_prompt.mp3',
   boil_hop_addition: 'boil_hop_addition.mp3',
   boil_complete: 'boil_complete.mp3',
+  whirlpool_start: 'whirlpool_start.mp3',
+  chill_start: 'chill_start.mp3',
+  brew_day_complete: 'brew_day_complete.mp3',
 };
 let brewAudioCtx = null;
 const brewAudioBuffers = {};
