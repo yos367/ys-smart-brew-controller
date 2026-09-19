@@ -1984,8 +1984,13 @@ function exitBrewCook() {
   // Leaving this screen must never leave heating running unsupervised -
   // the WebSocket itself staying open (same page, different screen) would
   // NOT trip the "0 connected clients" safety net in main.cpp, so this has
-  // to be explicit.
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_control');
+  // to be explicit. Both loops: RIMS (stop_control) and Boil
+  // (stop_boil_control) are independent - stopping only one would leave
+  // the other heating after Back (missed when Boil was first added).
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send('stop_control');
+    ws.send('stop_boil_control');
+  }
   brewHeatingArmed = false;
   brewActive = false;
   brewCookEl.classList.remove('visible');
