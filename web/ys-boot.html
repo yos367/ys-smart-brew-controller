@@ -619,6 +619,11 @@
      Save / Start Brewing are hidden - Start Brewing here would restart the day. */
   #import-recipe.peek { z-index:150; }
   #import-recipe.peek .import-save-row { display:none; }
+  .brew-wake-warn {
+    display:none; margin-top:6px; text-align:right;
+    font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; color:var(--brand-orange);
+  }
+  .brew-wake-warn.visible { display:block; }
   .brew-confirm-backdrop {
     display:none; position:fixed; inset:0; z-index:200;
     background:rgba(0,0,0,0.72); align-items:center; justify-content:center; padding:20px;
@@ -1233,6 +1238,7 @@
   <div class="brew-strip">
     <div class="brew-stepper" id="brew-stepper"></div>
     <div class="brew-clock"><button class="brew-log-btn" onclick="peekRecipe()">Recipe</button><button class="brew-log-btn" onclick="downloadBrewLog()">Download log</button><span>BREW DAY</span><span id="brew-total-timer">00:00:00</span></div>
+    <div class="brew-wake-warn" id="brew-wake-warn">Screen may turn off - keep this phone awake yourself</div>
   </div>
 
   <div class="brew-body">
@@ -1404,6 +1410,14 @@
         <div class="settings-note">Every brew day is logged in this page's memory (temperatures, stage changes, hop-addition times, what you pressed) and exported as a CSV. It is lost if the page is reloaded or closed, so download it when you are done.</div>
         <div class="import-status" id="settings-log-status"></div>
         <button class="timer-btn" onclick="downloadBrewLog()">Download Last Brew Log</button>
+      </div>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Keep Screen Awake</div>
+      <div class="settings-row">
+        <div class="settings-note">During a brew the page asks the phone not to turn its screen off. This only works if the browser allows it - see the status below (it is filled in once a brew has started).</div>
+        <div class="import-status" id="settings-wake-status"></div>
       </div>
     </div>
 
@@ -1617,6 +1631,8 @@ const settingsTolStatusEl = document.getElementById('settings-tol-status');
 const brewSilenceBtnEl = document.getElementById('brew-silence');
 const brewStepperEl = document.getElementById('brew-stepper');
 const brewLeaveConfirmEl = document.getElementById('brew-leave-confirm');
+const brewWakeWarnEl = document.getElementById('brew-wake-warn');
+const settingsWakeStatusEl = document.getElementById('settings-wake-status');
 const brewTotalTimerEl = document.getElementById('brew-total-timer');
 const brewSummaryEl = document.getElementById('brew-summary');
 const brewOgInputEl = document.getElementById('brew-og-input');
@@ -2274,6 +2290,7 @@ function startBrewing() {
   resetBrewLog();
   startBrewClock();
   brewActive = true;
+  acquireWakeLock();
   resetBrewGraph();
   importRecipeEl.classList.remove('visible');
   enterBrewCook();
@@ -2399,6 +2416,7 @@ function exitBrewCook() {
   brewLoopsReported = false;
   brewHeatingArmed = false;
   brewActive = false;
+  releaseWakeLock();
   stopBeeping();
   stopBrewClock(false);
   brewCookEl.classList.remove('visible');
@@ -2886,6 +2904,81 @@ function refreshLogStatus() {
 
 window.addEventListener('beforeunload', (e) => {
   if (brewActive && brewLog.length > 30) { e.preventDefault(); e.returnValue = ''; }
+});
+
+// ══ SCREEN WAKE LOCK ══
+// Keeps the phone's screen on while a brew is running, so the alerts, the
+// warnings and the temperatures stay visible instead of the phone locking.
+// Two ways, tried in order:
+//  1. The Screen Wake Lock API (navigator.wakeLock). Browsers only offer it on
+//     secure pages (https or localhost). The ESP32 serves plain http, so on a
+//     phone opening http://192.168.x.x this is normally UNAVAILABLE.
+//  2. Fallback: a tiny silent video looping out of sight - phones treat a
+//     playing video as "screen in use". Needs the Start Brewing tap to be
+//     allowed to play. Not verified on any real phone yet (see status line).
+// If neither works a visible orange line on the brew screen says so.
+const WAKE_VIDEO_SRC = 'data:video/webm;base64,GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQRChYECGFOAZwEAAAAAAAQ8EU2bdLlNu4tTq4QVSalmU6yBbk27i1OrhBZUrmtTrIGTTbuLU6uEH0O2dVOsgcFNu4xTq4QcU7trU6yCBCrsrgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmoCrXsYMPQkBEiYREoWONTYCGQ2hyb21lV0GGQ2hyb21lFlSua6mup9eBAXPFhwOlOZlzAPiDgQFV7oEBhoVWX1ZQOOCKsIEQuoEQU8CBAR9DtnUBAAAAAAADXeeBAKDOoaOBAAAAEAIAnQEqEAAQAAAHCIWFiJmEiAEkEABgawD+/6olgHWhpqak7oEBpZ8QAgCdASoQABAAAYcIhYWImYSICAIADA1gAP7+TeAAoLmhmYEAXQCxAQAAEA0QAMABgf+gYAAA/v+rUIB1oZimlu6BAaWRsQEABhBcABgAGFgv9AAIAAD7gQCguaGZgQC+ALEBAAAQCSAAwAGB/6BgAAD+/6olgHWhmKaW7oEBpZGxAQAGEFQAGAAYWC/0AAgAAPuBXaC5oZmBASUAsQEAABAJIADAAYH/oGAAAP7/q1CAdaGYppbugQGlkbEBAAYQTAAYABhYL/QACAAA+4G+oLqhmYEBjgCxAQAAEAkgAMABgf+gYAAA/v+qJYB1oZimlu6BAaWRsQEABhA0ABgAGFgv9AAIAAD7ggEloLqhmYEB7QCxAQAAEAkgAMABgf+gYAAA/v+rUIB1oZimlu6BAaWRsQEABhAsABgAGFgv9AAIAAD7ggGOoLqhmYECTQCxAQAAEAkgAMABgf+gYAAA/v+qJYB1oZimlu6BAaWRsQEABhAkABgAGFgv9AAIAAD7ggHtoLmhmIECvACRAQAAEBAUYADA/9AwAAD+/6tQgHWhmKaW7oEBpZGxAQAGECwUYABhYL/QACAAAPuCAk2guqGZgQMWALEBAAAQCSAAwAGB/6BgAAD+/6olgHWhmKaW7oEBpZGxAQAGECAAGAAYWC/0AAgAAPuCAryguqGZgQODALEBAAAQCSAAwAGB/6BgAAD+/6tQgHWhmKaW7oEBpZGxAQAGEBgAGAAYWC/0AAgAAPuCAxaguqGZgQPmALEBAAAQCSAAwAGB/6BgAAD+/6olgHWhmKaW7oEBpZGxAQAGEBQAGAAYWC/0AAgAAPuCA4OguqGZgQRCALEBAAAQCSAAwAGB/6BgAAD+/6tQgHWhmKaW7oEBpZGxAQAGEBAAGAAYWC/0AAgAAPuCA+agu6GZgQSzALEBAAAQCSAAwAGB/6BgAAD+/6olgHWhmaaX7oEBpZLRAQAGEA0QAMAAwsF/oABAAAD7ggRCoLuhmYEFCwCxAQAAEAkgAMABgf+gYAAA/v+rUIB1oZmml+6BAaWS0QEABhAJIADAAMLBf6AAQAAA+4IEsxxTu2uNu4uzgQC3hveBAfGBwQ==';
+let wakeSentinel = null;
+let wakeVideoEl = null;
+let wakeMode = 'off';   // off | api | video | none
+
+function setWakeMode(mode, note) {
+  wakeMode = mode;
+  brewWakeWarnEl.classList.toggle('visible', mode === 'none');
+  const labels = {
+    off: 'Not checked yet - starts when a brew starts.',
+    api: 'Active: screen wake lock granted by the browser.',
+    video: 'Active via the fallback (silent looping video). Unverified on real phones - check that your screen really stays on.',
+    none: 'NOT available: this browser refused both methods. Keep the phone awake manually (raise its screen timeout).',
+  };
+  settingsWakeStatusEl.textContent = labels[mode] + (note ? ' (' + note + ')' : '');
+  logEvent('wake_lock', mode + (note ? ' - ' + note : ''));
+}
+
+function startWakeVideo() {
+  if (!wakeVideoEl) {
+    wakeVideoEl = document.createElement('video');
+    wakeVideoEl.muted = true;
+    wakeVideoEl.loop = true;
+    wakeVideoEl.setAttribute('playsinline', '');
+    wakeVideoEl.setAttribute('aria-hidden', 'true');
+    wakeVideoEl.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0;';
+    wakeVideoEl.src = WAKE_VIDEO_SRC;
+    document.body.appendChild(wakeVideoEl);
+  }
+  return wakeVideoEl.play();
+}
+
+async function acquireWakeLock() {
+  if (!brewActive) return;
+  const why = window.isSecureContext ? '' : 'page is not https';
+  if (navigator.wakeLock && navigator.wakeLock.request) {
+    try {
+      wakeSentinel = await navigator.wakeLock.request('screen');
+      wakeSentinel.addEventListener('release', () => { wakeSentinel = null; });
+      setWakeMode('api', '');
+      return;
+    } catch (e) { /* fall through to the video fallback */ }
+  }
+  try {
+    await startWakeVideo();
+    setWakeMode('video', why);
+  } catch (e) {
+    setWakeMode('none', why || 'video blocked');
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeSentinel) { try { wakeSentinel.release(); } catch (e) { /* already gone */ } wakeSentinel = null; }
+  if (wakeVideoEl) { try { wakeVideoEl.pause(); } catch (e) { /* ignore */ } }
+  brewWakeWarnEl.classList.remove('visible');
+}
+
+// The API drops its lock whenever the page is hidden; take it again on return.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !brewActive) return;
+  if (wakeMode === 'api' && !wakeSentinel) acquireWakeLock();
+  else if (wakeMode === 'video' && wakeVideoEl && wakeVideoEl.paused) wakeVideoEl.play().catch(() => {});
 });
 
 // ══ SETTINGS (client-side, localStorage) ══
