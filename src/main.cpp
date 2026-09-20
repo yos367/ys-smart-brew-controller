@@ -1247,14 +1247,19 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
      family as "pump is on"), not a problem to be alarmed about like a
      dropped connection. */
   .brew-hop-alert {
-    display:flex; align-items:center; justify-content:space-between; gap:12px;
     background:#132424; border:1px solid var(--brand-teal);
     border-radius:4px; padding:12px 14px;
   }
-  .brew-hop-alert span {
-    font-family:'Rajdhani',sans-serif; font-size:14px; font-weight:600;
-    color:var(--brand-teal);
+  .brew-hop-alert-head {
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    margin-bottom:6px;
   }
+  .brew-hop-alert-head span {
+    font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:700;
+    letter-spacing:1px; text-transform:uppercase; color:var(--brand-teal);
+  }
+  .brew-hop-alert .brew-list-row { border-top-color:#1f3a3a; }
+  .brew-hop-alert .brew-list-val { color:var(--brand-teal); }
   .brew-hop-alert-dismiss {
     font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
     letter-spacing:1px; text-transform:uppercase; color:var(--brand-teal);
@@ -1264,26 +1269,28 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   }
   .brew-hop-alert-dismiss:active { transform:scale(0.95); }
 
-  .brew-hopstand {
+  .brew-list-panel {
     background:var(--panel-bg); border:1px solid var(--border-dim);
     border-radius:4px; padding:12px 14px;
   }
-  .brew-hopstand-title {
+  .brew-list-title {
     font-family:'Share Tech Mono',monospace; font-size:10px;
     letter-spacing:2px; color:var(--text-dimmer); text-transform:uppercase;
     margin-bottom:8px;
   }
-  .brew-hopstand-row {
+  .brew-list-row {
     display:flex; align-items:baseline; justify-content:space-between; gap:12px;
     padding:6px 0; border-top:1px solid var(--border-dim);
   }
-  .brew-hopstand-row:first-child { border-top:none; }
-  .brew-hopstand-name {
+  .brew-list-row:first-child { border-top:none; }
+  .brew-list-title:not(:first-child) { margin-top:14px; }
+  .brew-list-sub { display:block; font-family:'Share Tech Mono',monospace; font-size:11px; font-weight:400; color:var(--text-dim); margin-top:2px; }
+  .brew-list-name {
     font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:600;
     color:var(--text-primary); overflow-wrap:anywhere;
   }
-  .brew-hopstand-amt { color:var(--text-dim); font-weight:500; margin-left:6px; }
-  .brew-hopstand-temp {
+  .brew-list-amt { color:var(--text-dim); font-weight:500; margin-left:6px; }
+  .brew-list-val {
     font-family:'Share Tech Mono',monospace; font-size:15px; font-weight:700;
     color:var(--brand-orange); white-space:nowrap;
   }
@@ -1777,9 +1784,20 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
          otherwise stays hidden (no empty section, no placeholder). Purely
          informational: no timer or detection, the brewer compares the live
          temp above to each hop's listed temp by eye. -->
-    <div class="brew-hopstand" id="brew-hopstand" style="display:none">
-      <div class="brew-hopstand-title">Hop Stand Additions</div>
+    <div class="brew-list-panel" id="brew-hopstand" style="display:none">
+      <div class="brew-list-title">Hop Stand Additions</div>
       <div id="brew-hopstand-list"></div>
+    </div>
+
+    <!-- Dough In only: the recipe's fermentables and its Mash-use misc
+         items (water salts, acid, ...), each with quantity. Read straight
+         from the recipe, not from wherever else that data happens to surface
+         (Recipe Preview, All Other Fields). Hidden when there is nothing. -->
+    <div class="brew-list-panel" id="brew-ingredients" style="display:none">
+      <div class="brew-list-title" id="brew-ferm-title">Fermentables</div>
+      <div id="brew-ferm-list"></div>
+      <div class="brew-list-title" id="brew-mashmisc-title">Mash Additions</div>
+      <div id="brew-mashmisc-list"></div>
     </div>
 
     <!-- Hidden by default - hop-addition alerts during the Boil stage's
@@ -1787,8 +1805,11 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
          loss) so the two can never clobber each other if both happen to
          be relevant at once. -->
     <div class="brew-hop-alert" id="brew-hop-alert" style="display:none">
-      <span id="brew-hop-alert-text"></span>
-      <button class="brew-hop-alert-dismiss" onclick="dismissBrewHopAlert()">Dismiss</button>
+      <div class="brew-hop-alert-head">
+        <span>Add Hops Now</span>
+        <button class="brew-hop-alert-dismiss" onclick="dismissBrewHopAlert()">Dismiss</button>
+      </div>
+      <div id="brew-hop-alert-list"></div>
     </div>
 
     <div class="brew-graph-wrap">
@@ -2118,9 +2139,14 @@ const brewGraphCanvasEl = document.getElementById('brew-graph');
 const brewWarningEl = document.getElementById('brew-warning');
 const brewWarningTextEl = document.getElementById('brew-warning-text');
 const brewHopAlertEl = document.getElementById('brew-hop-alert');
-const brewHopAlertTextEl = document.getElementById('brew-hop-alert-text');
+const brewHopAlertListEl = document.getElementById('brew-hop-alert-list');
 const brewHopstandEl = document.getElementById('brew-hopstand');
 const brewHopstandListEl = document.getElementById('brew-hopstand-list');
+const brewIngredientsEl = document.getElementById('brew-ingredients');
+const brewFermTitleEl = document.getElementById('brew-ferm-title');
+const brewFermListEl = document.getElementById('brew-ferm-list');
+const brewMashMiscTitleEl = document.getElementById('brew-mashmisc-title');
+const brewMashMiscListEl = document.getElementById('brew-mashmisc-list');
 
 const SENSOR_LABELS = { A: 'Checking PT1...', B: 'Checking PT2...' };
 const FAIL_SENSOR_LABELS = { A: 'SENSOR A', B: 'SENSOR B', both: 'SENSORS A & B' };
@@ -2393,6 +2419,7 @@ const STAGES = {
         audio: 'dough_in_add_grain',
         message: 'Add grain now.',
         confirmLabel: 'Grain Added — Continue',
+        onEnter: () => renderDoughInIngredients(),
         onConfirm: () => {
           STAGES.mash_steps.steps = buildMashSteps(currentRecipe.mash_steps || []);
           startStage('mash_steps');
@@ -2561,7 +2588,7 @@ function buildBoilHopAlerts(hops) {
   });
   const alerts = Array.from(byTime.entries()).map(([timeMin, hs]) => ({
     atSec: Math.round(timeMin * 60),
-    label: 'Add hops: ' + hs.map((h) => h.name + (isNum(h.amount_g) ? ' (' + h.amount_g.toFixed(0) + 'g)' : '')).join(', '),
+    hops: hs.map((h) => ({ name: h.name || 'Hop', amount_g: h.amount_g })),
   }));
   alerts.sort((a, b) => b.atSec - a.atSec);
   return alerts;
@@ -2704,6 +2731,7 @@ function startStage(stageId) {
   dismissBrewWarning();
   dismissBrewHopAlert();
   hideHopstandHops();
+  hideDoughInIngredients();
   const stage = STAGES[stageId];
   brewStageNameEl.textContent = stage.name;
   brewStageNextEl.textContent = stage.nextName ? 'Next: ' + stage.nextName : '';
@@ -2730,6 +2758,8 @@ function advanceBrewStep(index) {
 function renderBrewStep() {
   const stage = STAGES[currentStageId];
   const step = stage.steps[currentStepIndex];
+  refreshBrewTempColors();
+  brewTempLabelPt2El.textContent = stage.sensorKey === 'pt2' ? 'BOIL' : 'MASH TEMP';
   // Timer-style steps build their message fresh each tick (from
   // handleBrewManual() below) to include the live countdown - only set
   // the static/first-render text here. Mash's isTimer and Boil's
@@ -2782,6 +2812,37 @@ function exitBrewCook() {
   menuEl.classList.add('visible');
 }
 
+// One row of a brew-screen list panel: name (+ optional dim amount and dim
+// second line) on the left, an optional value on the right. Built with
+// textContent, never innerHTML - recipe names come from imported data.
+function appendListRow(container, r) {
+  const row = document.createElement('div');
+  row.className = 'brew-list-row';
+  const name = document.createElement('div');
+  name.className = 'brew-list-name';
+  name.textContent = r.name;
+  if (r.amt) {
+    const amt = document.createElement('span');
+    amt.className = 'brew-list-amt';
+    amt.textContent = r.amt;
+    name.appendChild(amt);
+  }
+  if (r.sub) {
+    const sub = document.createElement('span');
+    sub.className = 'brew-list-sub';
+    sub.textContent = r.sub;
+    name.appendChild(sub);
+  }
+  row.appendChild(name);
+  if (r.val) {
+    const val = document.createElement('div');
+    val.className = 'brew-list-val';
+    val.textContent = r.val;
+    row.appendChild(val);
+  }
+  container.appendChild(row);
+}
+
 // Whirlpool's hop-stand list: name, amount, target temp - hottest first,
 // since the wort cools through them in that order. Informational only (no
 // timer, no detection of "temp reached for this hop"). Hidden entirely
@@ -2794,25 +2855,50 @@ function renderHopstandHops() {
   brewHopstandListEl.textContent = '';
   if (!hops.length) { brewHopstandEl.style.display = 'none'; return; }
   hops.forEach((h) => {
-    const row = document.createElement('div');
-    row.className = 'brew-hopstand-row';
-    const name = document.createElement('div');
-    name.className = 'brew-hopstand-name';
-    name.textContent = h.name || 'Hop';
-    if (isNum(h.amount_g)) {
-      const amt = document.createElement('span');
-      amt.className = 'brew-hopstand-amt';
-      amt.textContent = h.amount_g.toFixed(0) + ' g';
-      name.appendChild(amt);
-    }
-    const temp = document.createElement('div');
-    temp.className = 'brew-hopstand-temp';
-    temp.textContent = '@ ' + h.temperature_c.toFixed(0) + '°C';
-    row.appendChild(name);
-    row.appendChild(temp);
-    brewHopstandListEl.appendChild(row);
+    appendListRow(brewHopstandListEl, {
+      name: h.name || 'Hop',
+      amt: isNum(h.amount_g) ? h.amount_g.toFixed(0) + ' g' : '',
+      val: '@ ' + h.temperature_c.toFixed(0) + '°C',
+    });
   });
   brewHopstandEl.style.display = '';
+}
+
+// Dough In: what to add now. FERMENTABLES (name + amount) and every MISC with
+// use = Mash (name + amount), as separate itemized lists, each section hidden
+// when empty and the whole panel hidden when there is nothing at all.
+// KNOWN GAP: a Mash misc can carry a time offset (e.g. "add at 45 min"),
+// implying a mid-mash addition - there is no scheduling for that, so such an
+// item is listed here at dough-in with its time noted ("time: 45 min") so it
+// is at least visible and not silently dropped. Most recipes have none.
+function isMashMisc(m) {
+  return String(m.use || '').toLowerCase() === 'mash';
+}
+
+function renderDoughInIngredients() {
+  const recipe = currentRecipe || {};
+  const ferms = recipe.fermentables || [];
+  const miscs = (recipe.miscs || []).filter(isMashMisc);
+  brewFermListEl.textContent = '';
+  brewMashMiscListEl.textContent = '';
+  const totalKg = ferms.reduce((a, f) => a + (isNum(f.amount_kg) ? f.amount_kg : 0), 0);
+  brewFermTitleEl.textContent = 'Fermentables' + (totalKg > 0 ? ' · ' + totalKg.toFixed(2) + ' kg' : '');
+  ferms.forEach((f) => appendListRow(brewFermListEl, {
+    name: f.name || 'Fermentable',
+    val: isNum(f.amount_kg) ? f.amount_kg.toFixed(2) + ' kg' : '',
+  }));
+  miscs.forEach((m) => appendListRow(brewMashMiscListEl, {
+    name: m.name || 'Mash addition',
+    sub: [m.type, (isNum(m.time_min) && m.time_min > 0) ? 'time: ' + m.time_min.toFixed(0) + ' min' : ''].filter(Boolean).join(' · '),
+    val: m.display_amount || '',
+  }));
+  brewFermTitleEl.style.display = ferms.length ? '' : 'none';
+  brewMashMiscTitleEl.style.display = miscs.length ? '' : 'none';
+  brewIngredientsEl.style.display = (ferms.length || miscs.length) ? '' : 'none';
+}
+
+function hideDoughInIngredients() {
+  brewIngredientsEl.style.display = 'none';
 }
 
 function hideHopstandHops() {
@@ -2832,8 +2918,15 @@ function dismissBrewWarning() {
 // (see the HTML comment by #brew-hop-alert) - a hop addition and a
 // dropped connection are unrelated events that could in principle both be
 // true at once, and must never fight over the same banner.
-function showBrewHopAlert(text) {
-  brewHopAlertTextEl.textContent = text;
+// alert = { atSec, hops: [{ name, amount_g }] } from buildBoilHopAlerts() -
+// every hop due at this moment, listed with its amount (same list-panel
+// pattern as the Whirlpool hop-stand list), not a generic "add hops".
+function showBrewHopAlert(alert) {
+  brewHopAlertListEl.textContent = '';
+  alert.hops.forEach((h) => appendListRow(brewHopAlertListEl, {
+    name: h.name,
+    val: isNum(h.amount_g) ? h.amount_g.toFixed(0) + ' g' : '',
+  }));
   brewHopAlertEl.style.display = '';
   alertUser();
 }
@@ -2859,6 +2952,17 @@ function brewTempState(temp, isControlling) {
   if (temp > brewTargetSetpoint + BREW_OVERSHOOT_RED_C) return 'danger';
   if (temp >= brewTargetSetpoint - settings.targetTolC) return 'ok';
   return 'heating';
+}
+
+// Last readings seen, so the colors can be re-applied the instant a step or
+// stage changes (its target/controlling sensor may differ) instead of
+// showing the previous stage's color until the next once-a-second update.
+let lastBrewTemps = { pt1: null, pt2: null };
+function refreshBrewTempColors() {
+  const stage = STAGES[currentStageId];
+  const key = (stage && stage.sensorKey) || 'pt1';
+  applyBrewTempState(brewTempValuePt1El, lastBrewTemps.pt1, key === 'pt1');
+  applyBrewTempState(brewTempValuePt2El, lastBrewTemps.pt2, key === 'pt2');
 }
 
 function applyBrewTempState(el, temp, isControlling) {
@@ -2887,8 +2991,8 @@ function handleBrewManual(m) {
   brewTempValuePt1El.textContent = isNum(m.pt1) ? m.pt1.toFixed(1) + '°C' : 'ERR';
   brewTempValuePt2El.textContent = isNum(m.pt2) ? m.pt2.toFixed(1) + '°C' : 'ERR';
   brewTempLabelPt2El.textContent = sensorKey === 'pt2' ? 'BOIL' : 'MASH TEMP';
-  applyBrewTempState(brewTempValuePt1El, m.pt1, sensorKey === 'pt1');
-  applyBrewTempState(brewTempValuePt2El, m.pt2, sensorKey === 'pt2');
+  lastBrewTemps = { pt1: m.pt1, pt2: m.pt2 };
+  refreshBrewTempColors();
   brewPowerValueEl.textContent = m[ssrKey] ? 'ON' : 'OFF';
   brewPowerValueEl.classList.toggle('on', !!m[ssrKey]);
   brewPump1BtnEl.classList.toggle('on', !!m.relay1);
@@ -2965,7 +3069,7 @@ function handleBrewManual(m) {
   if (step.isBoilTimer && brewBoilRemainingSec !== null) {
     brewBoilRemainingSec = Math.max(0, brewBoilRemainingSec - 1);
     while (brewBoilHopAlerts.length && brewBoilRemainingSec <= brewBoilHopAlerts[0].atSec) {
-      showBrewHopAlert(brewBoilHopAlerts.shift().label);
+      showBrewHopAlert(brewBoilHopAlerts.shift());
     }
     if (brewBoilRemainingSec <= 0) {
       advanceBrewStep(currentStepIndex + 1);
