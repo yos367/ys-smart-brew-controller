@@ -614,6 +614,11 @@
     font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:1px; color:var(--text-dim);
   }
   #brew-total-timer { color:var(--text-primary); }
+  /* Recipe peek: the normal recipe screen laid OVER the brew screen (which
+     stays mounted underneath, so its stage, timers and heating keep running).
+     Save / Start Brewing are hidden - Start Brewing here would restart the day. */
+  #import-recipe.peek { z-index:150; }
+  #import-recipe.peek .import-save-row { display:none; }
   .brew-confirm-backdrop {
     display:none; position:fixed; inset:0; z-index:200;
     background:rgba(0,0,0,0.72); align-items:center; justify-content:center; padding:20px;
@@ -636,10 +641,11 @@
   .brew-confirm-btn.primary { background:var(--brand-orange); color:#1a1f2e; border-color:var(--brand-orange); }
   .brew-confirm-btn:active { transform:scale(0.97); }
   .brew-log-btn {
-    margin-right:auto; background:none; border:1px solid var(--border-dim); border-radius:4px;
+    background:none; border:1px solid var(--border-dim); border-radius:4px;
     font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; color:var(--text-dim);
     padding:3px 8px; cursor:pointer; -webkit-tap-highlight-color:transparent;
   }
+  .brew-log-btn:nth-child(2) { margin-right:auto; }
   .brew-log-btn:active { transform:scale(0.95); }
   .brew-notes {
     width:100%; resize:vertical; min-height:80px;
@@ -1046,7 +1052,7 @@
 <div id="import-recipe">
   <div class="topbar">
     <div class="manual-topbar-left">
-      <button class="back-btn" onclick="exitImportRecipe()">&lsaquo; Back</button>
+      <button class="back-btn" id="import-back-btn" onclick="exitImportRecipe()">&lsaquo; Back</button>
     </div>
     <div class="topbar-right">
       <div class="online-dot"></div>
@@ -1226,7 +1232,7 @@
        and how long it has been running in total. -->
   <div class="brew-strip">
     <div class="brew-stepper" id="brew-stepper"></div>
-    <div class="brew-clock"><button class="brew-log-btn" onclick="downloadBrewLog()">Download log</button><span>BREW DAY</span><span id="brew-total-timer">00:00:00</span></div>
+    <div class="brew-clock"><button class="brew-log-btn" onclick="peekRecipe()">Recipe</button><button class="brew-log-btn" onclick="downloadBrewLog()">Download log</button><span>BREW DAY</span><span id="brew-total-timer">00:00:00</span></div>
   </div>
 
   <div class="brew-body">
@@ -2263,7 +2269,7 @@ let brewHeatingArmedAt = 0;
 const BREW_HEATING_GRACE_MS = 1500;
 
 function startBrewing() {
-  if (!currentRecipe) return;
+  if (!currentRecipe || recipePeekOpen) return;
   ensureBeepAudio(); // this click is the user gesture browsers require to unlock sound
   resetBrewLog();
   startBrewClock();
@@ -2389,6 +2395,7 @@ function exitBrewCook() {
   }
   logEvent('brew_screen_exited', '');
   brewLeaveConfirmEl.classList.remove('visible');
+  if (recipePeekOpen) closeRecipePeek();
   brewLoopsReported = false;
   brewHeatingArmed = false;
   brewActive = false;
@@ -3151,7 +3158,37 @@ function enterImportRecipe() {
   importRecipeEl.classList.add('visible');
 }
 
+// Quick recipe peek from the brew screen: reuses the whole recipe screen
+// (showRecipePreview) as an overlay. Nothing about the brew changes - no stage
+// call, no WebSocket traffic, no timers touched - the brew screen just sits
+// underneath, still live. Closing does NOT go through the menu.
+let recipePeekOpen = false;
+
+function peekRecipe() {
+  if (!currentRecipe || !brewActive) return;
+  recipePeekOpen = true;
+  logEvent('recipe_peek_opened', '');
+  showRecipePreview(currentRecipe, 'load');
+  importRecipeEl.classList.add('peek');
+  importRecipeEl.classList.add('visible');
+  document.getElementById('import-back-btn').textContent = '\u2039 Back to brew';
+  importRecipeEl.querySelector('.import-body').scrollTop = 0;
+}
+
+function closeRecipePeek() {
+  recipePeekOpen = false;
+  logEvent('recipe_peek_closed', '');
+  importRecipeEl.classList.remove('visible');
+  importRecipeEl.classList.remove('peek');
+  document.getElementById('import-back-btn').innerHTML = '&lsaquo; Back';
+  importResultEl.classList.remove('visible');
+  importPickerEl.classList.remove('hidden');
+  importRecipeHeadingEl.textContent = 'Import Recipe';
+  importSaveRowEl.style.display = '';
+}
+
 function exitImportRecipe() {
+  if (recipePeekOpen) { closeRecipePeek(); return; }
   importRecipeEl.classList.remove('visible');
   menuEl.classList.add('visible');
   // Reset to the picker so re-entering later starts fresh, not on
