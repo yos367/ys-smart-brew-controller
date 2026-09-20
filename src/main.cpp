@@ -835,6 +835,12 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     animation:blink 2s ease-in-out infinite;
   }
   @keyframes blink{0%,100%{opacity:1}50%{opacity:0.2}}
+  /* Real connection state (see setConnState()): teal = live data flowing,
+     orange = connecting / connected but no data, red = offline. */
+  .online-dot.is-warn { background:var(--brand-orange); box-shadow:0 0 5px rgba(245,148,31,0.6); animation-duration:0.8s; }
+  .online-dot.is-off  { background:var(--state-red); box-shadow:0 0 5px rgba(255,77,79,0.6); animation:none; }
+  .online-txt.is-warn { color:var(--brand-orange); }
+  .online-txt.is-off  { color:var(--state-red); }
   .online-txt { font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:2px; color:var(--text-dim); }
   .ip-txt     { font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; color:var(--text-dimmer); }
 
@@ -1185,10 +1191,28 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   }
   #brew-cook.visible { display:flex; animation:menuIn 0.4s ease; }
 
+  .brew-strip { width:min(420px,92vw); margin-top:52px; flex-shrink:0; }
+  .brew-stepper { display:flex; gap:3px; }
+  .brew-step { flex:1; min-width:0; text-align:center; }
+  .brew-step-bar { height:4px; border-radius:2px; background:var(--border-dim); }
+  .brew-step-label {
+    font-family:'Share Tech Mono',monospace; font-size:8px; letter-spacing:0;
+    line-height:1.15; color:var(--text-dimmer); margin-top:4px;
+  }
+  .brew-step.is-done .brew-step-bar { background:var(--brand-teal); }
+  .brew-step.is-done .brew-step-label { color:var(--text-dim); }
+  .brew-step.is-current .brew-step-bar { background:var(--brand-orange); box-shadow:0 0 6px rgba(245,148,31,0.6); }
+  .brew-step.is-current .brew-step-label { color:var(--brand-orange); font-weight:700; }
+  .brew-clock {
+    display:flex; justify-content:flex-end; gap:8px; margin-top:6px;
+    font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:1px; color:var(--text-dim);
+  }
+  #brew-total-timer { color:var(--text-primary); }
+
   .brew-body {
-    width:min(420px,92vw); margin-top:56px;
+    width:min(420px,92vw); margin-top:8px;
     display:flex; flex-direction:column; gap:16px;
-    overflow-y:auto; max-height:calc(100vh - 90px); padding-bottom:20px;
+    overflow-y:auto; max-height:calc(100vh - 150px); padding-bottom:20px;
   }
 
   .brew-stage-banner {
@@ -1749,6 +1773,13 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     </div>
   </div>
 
+  <!-- Fixed (does not scroll with the body): where we are in the brew day,
+       and how long it has been running in total. -->
+  <div class="brew-strip">
+    <div class="brew-stepper" id="brew-stepper"></div>
+    <div class="brew-clock"><span>BREW DAY</span><span id="brew-total-timer">00:00:00</span></div>
+  </div>
+
   <div class="brew-body">
     <button class="brew-silence" id="brew-silence" onclick="silenceBeep()" style="display:none">Silence Alert</button>
 
@@ -2105,6 +2136,8 @@ const settingsBeepStatusEl = document.getElementById('settings-beep-status');
 const settingsTargetTolEl = document.getElementById('settings-target-tol');
 const settingsTolStatusEl = document.getElementById('settings-tol-status');
 const brewSilenceBtnEl = document.getElementById('brew-silence');
+const brewStepperEl = document.getElementById('brew-stepper');
+const brewTotalTimerEl = document.getElementById('brew-total-timer');
 const wifiCurrentStatusEl = document.getElementById('wifi-current-status');
 const wifiStopBtnEl = document.getElementById('wifi-stop-btn');
 const wifiNetworksListEl = document.getElementById('wifi-networks-list');
@@ -2207,6 +2240,40 @@ function handleBootCheck(msg) {
   }
 }
 
+// ══ CONNECTION BADGE (every screen's top bar) ══
+// The page can only see the WebSocket, not the ESP32's own WiFi, so this is
+// "can I reach the device and is data flowing": teal ONLINE = open and
+// receiving; orange CONNECTING = trying; orange NO DATA = open but silent for
+// over 4 s (the device pushes about once a second); red OFFLINE = closed. It
+// is separate from, and always on, unlike the brew screen's reactive
+// "Connection was lost - heating paused" warning.
+let connState = 'offline';
+let lastMsgAt = 0;
+const CONN_LABELS = { online: 'ONLINE', connecting: 'CONNECTING', nodata: 'NO DATA', offline: 'OFFLINE' };
+
+function setConnState(state) {
+  connState = state;
+  const warn = state === 'connecting' || state === 'nodata';
+  const off = state === 'offline';
+  document.querySelectorAll('.online-dot').forEach((el) => {
+    el.classList.toggle('is-warn', warn);
+    el.classList.toggle('is-off', off);
+  });
+  document.querySelectorAll('.online-txt').forEach((el) => {
+    el.textContent = CONN_LABELS[state];
+    el.classList.toggle('is-warn', warn);
+    el.classList.toggle('is-off', off);
+  });
+}
+
+// The address shown was a hard-coded 192.168.4.1 on every screen, wrong
+// whenever the page is opened via the home-network address.
+document.querySelectorAll('.ip-txt').forEach((el) => { el.textContent = window.location.hostname || '--'; });
+function checkConnStale() {
+  if (connState === 'online' && ws && ws.readyState === WebSocket.OPEN && Date.now() - lastMsgAt > 4000) setConnState('nodata');
+}
+setInterval(checkConnStale, 1000);
+
 function connect() {
   const host = window.location.hostname;
   // window.location.hostname is '' when this page is opened via file://
@@ -2217,16 +2284,21 @@ function connect() {
   // has a non-empty hostname (192.168.4.1), so this only ever skips the
   // connection attempt for file:// or the explicit debug shortcut - it
   // never changes behavior when actually served by the ESP32.
-  if (!host || debugImportMode) return;
+  if (!host || debugImportMode) { setConnState('offline'); return; }
 
+  setConnState('connecting');
   ws = new WebSocket('ws://' + host + ':81/');
 
+  ws.onopen = () => { lastMsgAt = Date.now(); setConnState('online'); };
   ws.onclose = () => {
+    setConnState('offline');
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(connect, 1500);
   };
   ws.onerror = () => { ws.close(); };
   ws.onmessage = (evt) => {
+    lastMsgAt = Date.now();
+    if (connState === 'nodata') setConnState('online');
     try {
       const msg = JSON.parse(evt.data);
       if (msg.boot_check) {
@@ -2713,6 +2785,7 @@ const BREW_HEATING_GRACE_MS = 1500;
 function startBrewing() {
   if (!currentRecipe) return;
   ensureBeepAudio(); // this click is the user gesture browsers require to unlock sound
+  startBrewClock();
   brewActive = true;
   resetBrewGraph();
   importRecipeEl.classList.remove('visible');
@@ -2728,6 +2801,8 @@ function startStage(stageId) {
   brewCountdownSec = null;
   brewHeatingArmed = false; // the new stage's own steps re-arm this if they heat
   stopBeeping(); // the previous stage's alert is over the moment we move on
+  updateStepper(stageId);
+  if (stageId === 'brew_complete') stopBrewClock(true); // total time freezes at the end of the flow
   dismissBrewWarning();
   dismissBrewHopAlert();
   hideHopstandHops();
@@ -2808,6 +2883,7 @@ function exitBrewCook() {
   brewHeatingArmed = false;
   brewActive = false;
   stopBeeping();
+  stopBrewClock(false);
   brewCookEl.classList.remove('visible');
   menuEl.classList.add('visible');
 }
@@ -3083,6 +3159,67 @@ function handleBrewManual(m) {
 // once a microSD card is wired in. The `audio:` ids on the stage steps below
 // are the event names for that - nothing plays them at the moment. The mp3s
 // stay in web/audio/ and scripts/embed_audio.py stays in the repo.
+
+// ══ BREW-DAY STEPPER + TOTAL TIMER ══
+const BREW_STAGE_ORDER = [
+  ['water_prep', 'Water Prep'], ['dough_in', 'Dough In'], ['mash_steps', 'Mash'], ['boil', 'Boil'],
+  ['whirlpool', 'Whirlpool'], ['chill', 'Chill'], ['brew_complete', 'Complete'],
+];
+BREW_STAGE_ORDER.forEach(([id, label]) => {
+  const seg = document.createElement('div');
+  seg.className = 'brew-step';
+  seg.id = 'brew-step-' + id;
+  const bar = document.createElement('div');
+  bar.className = 'brew-step-bar';
+  const text = document.createElement('div');
+  text.className = 'brew-step-label';
+  text.textContent = label;
+  seg.appendChild(bar);
+  seg.appendChild(text);
+  brewStepperEl.appendChild(seg);
+});
+
+function updateStepper(stageId) {
+  const cur = BREW_STAGE_ORDER.findIndex(([id]) => id === stageId);
+  BREW_STAGE_ORDER.forEach(([id], i) => {
+    const seg = document.getElementById('brew-step-' + id);
+    seg.classList.toggle('is-done', i < cur);
+    seg.classList.toggle('is-current', i === cur);
+  });
+}
+
+// Wall-clock based (Date.now() minus the start), not a counter, so a
+// throttled/backgrounded tab still shows the right total when it wakes.
+// Starts at Start Brewing, freezes when Brew day complete is reached.
+let brewStartMs = null;
+let brewEndMs = null;
+let brewClockTimer = null;
+
+function formatHms(totalSec) {
+  const h = Math.floor(totalSec / 3600), m = Math.floor((totalSec % 3600) / 60), s = totalSec % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+}
+
+function updateBrewClock() {
+  if (brewStartMs === null) { brewTotalTimerEl.textContent = '00:00:00'; return; }
+  const end = brewEndMs !== null ? brewEndMs : Date.now();
+  brewTotalTimerEl.textContent = formatHms(Math.max(0, Math.floor((end - brewStartMs) / 1000)));
+}
+
+function startBrewClock() {
+  brewStartMs = Date.now();
+  brewEndMs = null;
+  clearInterval(brewClockTimer);
+  brewClockTimer = setInterval(updateBrewClock, 1000);
+  updateBrewClock();
+}
+
+function stopBrewClock(freeze) {
+  if (freeze && brewStartMs !== null && brewEndMs === null) brewEndMs = Date.now();
+  clearInterval(brewClockTimer);
+  brewClockTimer = null;
+  updateBrewClock();
+}
 
 // ══ SETTINGS (client-side, localStorage) ══
 // Persisted per BROWSER, not per device: the phone and a PC each keep their
