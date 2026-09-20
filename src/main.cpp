@@ -1006,13 +1006,13 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
 
   /* ══ IMPORT RECIPE (step 1: parse + preview only, no save yet -
      see import-file-step1-spec.md) ══ */
-  #import-recipe, #load-recipe, #wifi-setup, #brewfather-settings, #brewfather-list {
+  #import-recipe, #load-recipe, #wifi-setup, #brewfather-settings, #brewfather-list, #settings {
     display:none; position:fixed; inset:0;
     background:var(--bg-primary);
     flex-direction:column; align-items:center;
   }
   #import-recipe.visible, #load-recipe.visible, #wifi-setup.visible,
-  #brewfather-settings.visible, #brewfather-list.visible { display:flex; animation:menuIn 0.4s ease; }
+  #brewfather-settings.visible, #brewfather-list.visible, #settings.visible { display:flex; animation:menuIn 0.4s ease; }
 
   .import-body {
     width:min(400px,88vw); margin-top:64px; padding-bottom:40px;
@@ -1224,6 +1224,23 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   }
   .brew-warning-dismiss:active { transform:scale(0.95); }
 
+  /* Shown only while the alert beep is sounding. Sticky so it stays
+     reachable without scrolling back up to it on a phone. */
+  .brew-silence {
+    position:sticky; top:0; z-index:5;
+    font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:700;
+    letter-spacing:2px; text-transform:uppercase;
+    color:#1a1f2e; background:var(--brand-orange); border:none; border-radius:4px;
+    padding:14px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  .brew-silence:active { transform:scale(0.97); }
+
+  .settings-row { display:flex; flex-direction:column; gap:10px; }
+  .settings-note {
+    font-family:'Share Tech Mono',monospace; font-size:11px;
+    letter-spacing:1px; color:var(--text-dim); line-height:1.5;
+  }
+
   /* brand-teal, not orange - this is routine "do a thing now" info (same
      family as "pump is on"), not a problem to be alarmed about like a
      dropped connection. */
@@ -1414,6 +1431,14 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       <div class="mbtn-body">
         <div class="mbtn-title">CLEAN</div>
         <div class="mbtn-sub">Simple on/off heat to a target temperature</div>
+      </div>
+      <div class="mbtn-arr">›</div>
+    </div>
+    <div class="mbtn" onclick="enterSettings()">
+      <div class="mbtn-icon">🔔</div>
+      <div class="mbtn-body">
+        <div class="mbtn-title">Settings</div>
+        <div class="mbtn-sub">Alert sound and brew preferences</div>
       </div>
       <div class="mbtn-arr">›</div>
     </div>
@@ -1705,6 +1730,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   </div>
 
   <div class="brew-body">
+    <button class="brew-silence" id="brew-silence" onclick="silenceBeep()" style="display:none">Silence Alert</button>
+
     <div class="brew-stage-banner">
       <div class="brew-stage-name" id="brew-stage-name">--</div>
       <div class="brew-stage-next" id="brew-stage-next">--</div>
@@ -1796,6 +1823,37 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
 
     <div class="import-status" id="load-recipe-empty" style="display:none">No saved recipes yet</div>
     <div class="recipe-list" id="load-recipe-list"></div>
+  </div>
+</div>
+
+<!-- ══ SETTINGS ══ -->
+<div id="settings">
+  <div class="topbar">
+    <div class="manual-topbar-left">
+      <button class="back-btn" onclick="exitSettings()">&lsaquo; Back</button>
+    </div>
+    <div class="topbar-right">
+      <div class="online-dot"></div>
+      <div class="online-txt">ONLINE</div>
+      <div class="ip-txt">192.168.4.1</div>
+    </div>
+  </div>
+
+  <div class="import-body">
+    <div class="menu-heading">
+      <div class="h-line"></div>
+      <div class="h-text">Settings</div>
+      <div class="h-line r"></div>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Alert Sound</div>
+      <div class="settings-row">
+        <div class="settings-note">Every step that waits for you to press Continue beeps repeatedly until you press Continue or Silence Alert. Check it works before brew day.</div>
+        <button class="timer-btn" onclick="testBeep()">Test Beep</button>
+        <div class="import-status" id="settings-beep-status"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1988,6 +2046,9 @@ const loadRecipeEl = document.getElementById('load-recipe');
 const loadRecipeListEl = document.getElementById('load-recipe-list');
 const loadRecipeEmptyEl = document.getElementById('load-recipe-empty');
 const wifiSetupEl = document.getElementById('wifi-setup');
+const settingsEl = document.getElementById('settings');
+const settingsBeepStatusEl = document.getElementById('settings-beep-status');
+const brewSilenceBtnEl = document.getElementById('brew-silence');
 const wifiCurrentStatusEl = document.getElementById('wifi-current-status');
 const wifiStopBtnEl = document.getElementById('wifi-stop-btn');
 const wifiNetworksListEl = document.getElementById('wifi-networks-list');
@@ -2510,6 +2571,7 @@ function buildMashSteps(mashSteps) {
       audio: 'mash_step_temp_reached',
       confirmLabel: null,
       isTimer: true,
+      beepOnEnter: true, // "target reached, timer started" - no Continue here, silenced with the Silence button
       baseMessage: 'Holding — ' + label,
       onEnter: () => {
         const sec = isNum(ms.time_min) ? Math.round(ms.time_min * 60) : 0;
@@ -2587,6 +2649,7 @@ const BREW_HEATING_GRACE_MS = 1500;
 
 function startBrewing() {
   if (!currentRecipe) return;
+  ensureBeepAudio(); // this click is the user gesture browsers require to unlock sound
   brewActive = true;
   resetBrewGraph();
   importRecipeEl.classList.remove('visible');
@@ -2601,6 +2664,7 @@ function startStage(stageId) {
   brewTargetSetpoint = null; // no stale target line from the previous stage; heating steps set their own in onEnter
   brewCountdownSec = null;
   brewHeatingArmed = false; // the new stage's own steps re-arm this if they heat
+  stopBeeping(); // the previous stage's alert is over the moment we move on
   dismissBrewWarning();
   dismissBrewHopAlert();
   hideHopstandHops();
@@ -2610,6 +2674,7 @@ function startStage(stageId) {
   const step = stage.steps[0];
   if (step.onEnter) step.onEnter();
   renderBrewStep();
+  alertForCurrentStep();
 }
 
 function advanceBrewStep(index) {
@@ -2617,11 +2682,13 @@ function advanceBrewStep(index) {
   if (!stage || index >= stage.steps.length) return;
   currentStepIndex = index;
   brewCountdownSec = null;
+  stopBeeping();
   dismissBrewWarning();
   dismissBrewHopAlert();
   const step = stage.steps[index];
   if (step.onEnter) step.onEnter();
   renderBrewStep();
+  alertForCurrentStep();
 }
 
 function renderBrewStep() {
@@ -2651,6 +2718,7 @@ function renderBrewStep() {
 function confirmBrewStep() {
   const stage = STAGES[currentStageId];
   const step = stage.steps[currentStepIndex];
+  stopBeeping(); // pressing Continue always silences a beep that's still going
   if (step.onConfirm) step.onConfirm();
 }
 
@@ -2673,6 +2741,7 @@ function exitBrewCook() {
   }
   brewHeatingArmed = false;
   brewActive = false;
+  stopBeeping();
   brewCookEl.classList.remove('visible');
   menuEl.classList.add('visible');
 }
@@ -2730,10 +2799,12 @@ function dismissBrewWarning() {
 function showBrewHopAlert(text) {
   brewHopAlertTextEl.textContent = text;
   brewHopAlertEl.style.display = '';
+  alertUser();
 }
 
 function dismissBrewHopAlert() {
   brewHopAlertEl.style.display = 'none';
+  stopBeeping(); // acknowledging the alert silences its beep; the countdown is untouched
 }
 
 function handleBrewManual(m) {
@@ -2841,6 +2912,109 @@ function handleBrewManual(m) {
 // once a microSD card is wired in. The `audio:` ids on the stage steps below
 // are the event names for that - nothing plays them at the moment. The mp3s
 // stay in web/audio/ and scripts/embed_audio.py stays in the repo.
+
+// ══ ALERT BEEP ══
+// A synthesized tone (Web Audio oscillator - no file, no flash cost) that
+// repeats until the user silences it, at EVERY moment the brew is waiting
+// on them: any step with a Continue button, each hop alert, and the mash
+// "temp reached" timer start. It starts after the announcement has been
+// shown; today the announcement is purely visual (instant), and when voice
+// clips come back announcementDoneThen() is the one place that should wait
+// for the clip to end. Silenced by: Continue (confirmBrewStep), a hop
+// alert's Dismiss, the sticky Silence Alert button, or leaving the screen.
+// It never advances a stage by itself.
+const BEEP_CYCLE_MS = 2500; // three short beeps, then a pause, repeated forever
+let beepCtx = null;
+let beepTimer = null;
+
+// Browsers only allow sound after a user gesture - called from the Start
+// Brewing click and the Test Beep click.
+function ensureBeepAudio() {
+  if (!beepCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return false;
+    beepCtx = new Ctx();
+  }
+  if (beepCtx.state === 'suspended') beepCtx.resume();
+  return true;
+}
+
+function playBeepCycle() {
+  const ctx = beepCtx;
+  if (!ctx) return;
+  if (ctx.state === 'suspended') ctx.resume();
+  const t0 = ctx.currentTime + 0.02;
+  for (let i = 0; i < 3; i++) {
+    const t = t0 + i * 0.28;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0, t);
+    gain.gain.linearRampToValueAtTime(0.18, t + 0.01);
+    gain.gain.setValueAtTime(0.18, t + 0.16);
+    gain.gain.linearRampToValueAtTime(0, t + 0.18); // ramps, not hard edges, so no click
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.2);
+  }
+}
+
+function announcementDoneThen(fn) {
+  fn(); // visual-only announcements are instant; voice would wait for the clip here
+}
+
+function startBeeping() {
+  if (beepTimer !== null) return; // already sounding for this alert
+  brewSilenceBtnEl.style.display = '';
+  playBeepCycle();
+  beepTimer = setInterval(playBeepCycle, BEEP_CYCLE_MS);
+}
+
+function stopBeeping() {
+  if (beepTimer !== null) {
+    clearInterval(beepTimer);
+    beepTimer = null;
+  }
+  brewSilenceBtnEl.style.display = 'none';
+}
+
+function silenceBeep() {
+  stopBeeping();
+}
+
+function alertUser() {
+  announcementDoneThen(startBeeping);
+}
+
+// Called after a step is entered: is the brew now waiting on the user?
+function alertForCurrentStep() {
+  const stage = STAGES[currentStageId];
+  const step = stage && stage.steps[currentStepIndex];
+  if (step && (step.confirmLabel || step.beepOnEnter)) alertUser();
+}
+
+// ── Settings screen ──
+function enterSettings() {
+  menuEl.classList.remove('visible');
+  settingsEl.classList.add('visible');
+  settingsBeepStatusEl.textContent = '';
+}
+
+function exitSettings() {
+  settingsEl.classList.remove('visible');
+  menuEl.classList.add('visible');
+}
+
+function testBeep() {
+  if (!ensureBeepAudio()) {
+    settingsBeepStatusEl.textContent = 'This browser cannot play sound (no Web Audio).';
+    return;
+  }
+  playBeepCycle();
+  settingsBeepStatusEl.textContent = 'Played (' + beepCtx.state + '). If you heard nothing, check the phone volume and silent switch.';
+}
 
 // ── Live temperature graph (plain canvas, no library - this page has no
 // internet access to fetch one from, see the embedded-fonts note above) ──
