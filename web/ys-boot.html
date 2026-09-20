@@ -78,6 +78,12 @@
     --panel-bg:     #12151f;
     --state-green:  #34c759;
     --state-red:    #ff4d4f;
+    --surface-2:    #161a26;
+    --tint-teal:    #132424;
+    --tint-orange:  #2a1f10;
+    --teal-line:    #1f3a3a;
+    --text-mid:     #cccccc;
+    --on-accent:    #1a1f2e; /* text on an orange/teal filled button: dark in both themes */
   }
 
   *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
@@ -267,11 +273,11 @@
     cursor:pointer; transition:all 0.15s ease;
     -webkit-tap-highlight-color:transparent; user-select:none;
   }
-  .mbtn:hover,.mbtn:active { border-color:var(--brand-orange); background:#161a26; }
+  .mbtn:hover,.mbtn:active { border-color:var(--brand-orange); background:var(--surface-2); }
   .mbtn:active { transform:scale(0.98); }
   .mbtn-icon {
     width:32px; height:32px; border-radius:3px;
-    background:#161a26; border:1px solid var(--border-dim);
+    background:var(--surface-2); border:1px solid var(--border-dim);
     display:flex; align-items:center; justify-content:center;
     font-size:14px; flex-shrink:0; filter:grayscale(1);
   }
@@ -279,7 +285,7 @@
   .mbtn-title {
     font-family:'Rajdhani',sans-serif;
     font-size:14px; font-weight:600; letter-spacing:2px;
-    color:#ccc; text-transform:uppercase;
+    color:var(--text-mid); text-transform:uppercase;
   }
   .mbtn-sub { font-size:10px; color:var(--text-dim); letter-spacing:1px; margin-top:1px; }
   .mbtn-arr { font-size:16px; color:var(--text-dimmer); transition:all 0.15s ease; }
@@ -354,13 +360,13 @@
   .pump-btn:active { transform:scale(0.97); }
   .pump-btn-label {
     font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600;
-    letter-spacing:1px; color:#ccc; text-transform:uppercase; margin-bottom:6px;
+    letter-spacing:1px; color:var(--text-mid); text-transform:uppercase; margin-bottom:6px;
   }
   .pump-btn-state {
     font-family:'Share Tech Mono',monospace; font-size:11px;
     letter-spacing:1px; color:var(--text-dimmer);
   }
-  .pump-btn.on { border-color:var(--brand-teal); background:#132424; }
+  .pump-btn.on { border-color:var(--brand-teal); background:var(--tint-teal); }
   .pump-btn.on .pump-btn-state { color:var(--brand-teal); }
 
   .timer-section {
@@ -375,7 +381,7 @@
   .timer-btn {
     font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
     letter-spacing:1px; text-transform:uppercase; color:var(--text-primary);
-    background:#161a26; border:1px solid var(--border-dim); border-radius:4px;
+    background:var(--surface-2); border:1px solid var(--border-dim); border-radius:4px;
     padding:8px 16px; cursor:pointer; transition:all 0.15s ease;
     -webkit-tap-highlight-color:transparent;
   }
@@ -395,28 +401,63 @@
   .setpoint-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
   .setpoint-label {
     font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600;
-    color:#ccc; text-transform:uppercase; letter-spacing:1px;
+    color:var(--text-mid); text-transform:uppercase; letter-spacing:1px;
   }
   .setpoint-input {
     width:90px; font-family:'Share Tech Mono',monospace; font-size:16px;
-    background:#161a26; border:1px solid var(--border-dim); border-radius:4px;
+    background:var(--surface-2); border:1px solid var(--border-dim); border-radius:4px;
     color:var(--text-primary); padding:8px 10px; text-align:center;
   }
   .setpoint-input:focus { outline:none; border-color:var(--brand-orange); }
   .control-btn {
     font-family:'Rajdhani',sans-serif; font-weight:600; font-size:14px;
     letter-spacing:2px; text-transform:uppercase; color:var(--text-primary);
-    background:#161a26; border:1px solid var(--border-dim); border-radius:4px;
+    background:var(--surface-2); border:1px solid var(--border-dim); border-radius:4px;
     padding:12px; cursor:pointer; transition:all 0.15s ease;
     -webkit-tap-highlight-color:transparent; user-select:none;
   }
-  .control-btn.active { border-color:var(--brand-teal); background:#132424; color:var(--brand-teal); }
+  .control-btn.active { border-color:var(--brand-teal); background:var(--tint-teal); color:var(--brand-teal); }
   .control-btn:active { transform:scale(0.97); }
   .control-status {
     font-family:'Share Tech Mono',monospace; font-size:11px;
     letter-spacing:1px; color:var(--text-dim); text-align:center;
   }
   .control-status.on { color:var(--brand-teal); }
+
+  /* ══ LIGHT THEME ══ (Settings > Appearance; dark stays the default).
+     Same variable names, different values, switched by data-theme on <html>.
+     The orange/teal are darkened a step so text in those colors stays
+     readable on a light background; the boot and boot-failure screens are
+     always dark (their logo is drawn for a dark background). */
+  :root[data-theme="light"] {
+    --bg-primary:   #f3f5f9;
+    --text-primary: #161b26;
+    --text-dim:     #5a6273;
+    --text-dimmer:  #8b93a3;
+    --brand-orange: #d16b00;
+    --brand-teal:   #1c8585;
+    --border-dim:   #cdd3df;
+    --panel-bg:     #ffffff;
+    --state-green:  #1e9e47;
+    --state-red:    #d3282b;
+    --surface-2:    #eaeef5;
+    --tint-teal:    #dcf0f0;
+    --tint-orange:  #fdebd3;
+    --teal-line:    #b9dcdc;
+    --text-mid:     #2c3444;
+  }
+  :root[data-theme="light"] #boot, :root[data-theme="light"] #fail {
+    --bg-primary:   #1a1f2e;
+    --text-primary: #ffffff;
+    --text-dim:     #888888;
+    --text-dimmer:  #444444;
+    --brand-orange: #f5941f;
+    --brand-teal:   #2a9d9d;
+    --border-dim:   #2a3040;
+    --panel-bg:     #12151f;
+  }
+  .theme-toggle { display:flex; gap:10px; }
+  .theme-toggle .control-btn { flex:1; }
 
   /* ══ IMPORT RECIPE (step 1: parse + preview only, no save yet -
      see import-file-step1-spec.md) ══ */
@@ -641,9 +682,9 @@
   .brew-confirm-btn {
     font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
     border-radius:4px; padding:14px; cursor:pointer; -webkit-tap-highlight-color:transparent;
-    background:#161a26; color:var(--text-primary); border:1px solid var(--border-dim);
+    background:var(--surface-2); color:var(--text-primary); border:1px solid var(--border-dim);
   }
-  .brew-confirm-btn.primary { background:var(--brand-orange); color:#1a1f2e; border-color:var(--brand-orange); }
+  .brew-confirm-btn.primary { background:var(--brand-orange); color:var(--on-accent); border-color:var(--brand-orange); }
   .brew-confirm-btn:active { transform:scale(0.97); }
   .brew-log-btn {
     background:none; border:1px solid var(--border-dim); border-radius:4px;
@@ -654,7 +695,7 @@
   .brew-log-btn:active { transform:scale(0.95); }
   .brew-notes {
     width:100%; resize:vertical; min-height:80px;
-    font-family:'Rajdhani',sans-serif; font-size:16px; background:#161a26; color:var(--text-primary);
+    font-family:'Rajdhani',sans-serif; font-size:16px; background:var(--surface-2); color:var(--text-primary);
     border:1px solid var(--border-dim); border-radius:4px; padding:10px;
   }
   .brew-notes:focus { outline:none; border-color:var(--brand-orange); }
@@ -684,7 +725,7 @@
      about rather than assume is fine. */
   .brew-warning {
     display:flex; align-items:center; justify-content:space-between; gap:12px;
-    background:#2a1f10; border:1px solid var(--brand-orange);
+    background:var(--tint-orange); border:1px solid var(--brand-orange);
     border-radius:4px; padding:12px 14px;
   }
   .brew-warning span {
@@ -706,7 +747,7 @@
     position:sticky; top:0; z-index:5;
     font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:700;
     letter-spacing:2px; text-transform:uppercase;
-    color:#1a1f2e; background:var(--brand-orange); border:none; border-radius:4px;
+    color:var(--on-accent); background:var(--brand-orange); border:none; border-radius:4px;
     padding:14px; cursor:pointer; -webkit-tap-highlight-color:transparent;
   }
   .brew-silence:active { transform:scale(0.97); }
@@ -721,7 +762,7 @@
      family as "pump is on"), not a problem to be alarmed about like a
      dropped connection. */
   .brew-hop-alert {
-    background:#132424; border:1px solid var(--brand-teal);
+    background:var(--tint-teal); border:1px solid var(--brand-teal);
     border-radius:4px; padding:12px 14px;
   }
   .brew-hop-alert-head {
@@ -732,7 +773,7 @@
     font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:700;
     letter-spacing:1px; text-transform:uppercase; color:var(--brand-teal);
   }
-  .brew-hop-alert .brew-list-row { border-top-color:#1f3a3a; }
+  .brew-hop-alert .brew-list-row { border-top-color:var(--teal-line); }
   .brew-hop-alert .brew-list-val { color:var(--brand-teal); }
   .brew-hop-alert-dismiss {
     font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
@@ -819,7 +860,7 @@
   }
   .brew-power-label {
     font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600;
-    color:#ccc; text-transform:uppercase; letter-spacing:1px;
+    color:var(--text-mid); text-transform:uppercase; letter-spacing:1px;
   }
   .brew-power-value {
     font-family:'Share Tech Mono',monospace; font-size:14px; font-weight:700;
@@ -1410,6 +1451,17 @@
         <div class="settings-note">Every brew day is logged in this page's memory (temperatures, stage changes, hop-addition times, what you pressed) and exported as a CSV. It is lost if the page is reloaded or closed, so download it when you are done.</div>
         <div class="import-status" id="settings-log-status"></div>
         <button class="timer-btn" onclick="downloadBrewLog()">Download Last Brew Log</button>
+      </div>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Appearance</div>
+      <div class="settings-row">
+        <div class="settings-note">Dark is the default. Light is easier to read in bright daylight or a bright brewing room. Saved in this browser only.</div>
+        <div class="theme-toggle">
+          <button class="control-btn" id="theme-btn-dark" onclick="setTheme('dark')">Dark</button>
+          <button class="control-btn" id="theme-btn-light" onclick="setTheme('light')">Light</button>
+        </div>
       </div>
     </div>
 
@@ -2992,6 +3044,7 @@ const SETTINGS_DEFAULTS = {
   // auto-advance checks. 0 = must reach the target exactly - that is what
   // the hardcoded check (liveTemp >= target) always did, so 0 is the default.
   targetTolC: 0,
+  theme: 'dark',   // 'dark' (default) | 'light'
 };
 function loadSettings() {
   try {
@@ -3005,6 +3058,23 @@ function saveSettings() {
   try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); return true; } catch (e) { return false; }
 }
 let settings = loadSettings();
+if (settings.theme !== 'dark' && settings.theme !== 'light') settings.theme = SETTINGS_DEFAULTS.theme;
+
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', settings.theme);
+  const dark = document.getElementById('theme-btn-dark');
+  const light = document.getElementById('theme-btn-light');
+  if (dark) dark.classList.toggle('active', settings.theme === 'dark');
+  if (light) light.classList.toggle('active', settings.theme === 'light');
+  if (typeof renderBrewGraph === 'function') { try { renderBrewGraph(); } catch (e) { /* canvas not ready yet */ } }
+}
+
+function setTheme(theme) {
+  settings.theme = theme === 'light' ? 'light' : 'dark';
+  saveSettings();
+  applyTheme();
+}
+applyTheme();
 
 function onTargetTolChange() {
   let v = parseFloat(settingsTargetTolEl.value);
@@ -3152,6 +3222,10 @@ function resizeBrewGraph() {
   renderBrewGraph();
 }
 
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 function renderBrewGraph() {
   const ctx = brewGraphCanvasEl.getContext('2d');
   const w = brewGraphCanvasEl.width, h = brewGraphCanvasEl.height;
@@ -3194,14 +3268,14 @@ function renderBrewGraph() {
     const ty = y(brewTargetSetpoint);
     ctx.moveTo(margin, ty);
     ctx.lineTo(w - margin, ty);
-    ctx.strokeStyle = '#888888';
+    ctx.strokeStyle = cssVar('--text-dim');
     ctx.lineWidth = 1.5 * (window.devicePixelRatio || 1);
     ctx.stroke();
     ctx.setLineDash([]);
   }
 
-  drawLine('pt1', '#f5941f');
-  drawLine('pt2', '#2a9d9d');
+  drawLine('pt1', cssVar('--brand-orange'));
+  drawLine('pt2', cssVar('--brand-teal'));
 }
 
 window.addEventListener('resize', () => {
