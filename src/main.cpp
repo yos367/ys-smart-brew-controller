@@ -920,7 +920,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   .back-btn {
     font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600;
     letter-spacing:1px; color:var(--text-dim); text-transform:uppercase;
-    background:none; border:none; cursor:pointer; padding:4px 6px;
+    background:none; border:none; cursor:pointer; padding:4px 10px;
+    min-height:44px; min-width:44px; /* comfortable thumb target */
     -webkit-tap-highlight-color:transparent;
   }
   .back-btn:hover, .back-btn:active { color:var(--brand-orange); }
@@ -976,7 +977,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
     letter-spacing:1px; text-transform:uppercase; color:var(--text-primary);
     background:var(--surface-2); border:1px solid var(--border-dim); border-radius:4px;
-    padding:8px 16px; cursor:pointer; transition:all 0.15s ease;
+    padding:8px 16px; min-height:44px; cursor:pointer; transition:all 0.15s ease;
     -webkit-tap-highlight-color:transparent;
   }
   .timer-btn:hover { border-color:var(--brand-orange); }
@@ -1000,14 +1001,14 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   .setpoint-input {
     width:90px; font-family:'Share Tech Mono',monospace; font-size:16px;
     background:var(--surface-2); border:1px solid var(--border-dim); border-radius:4px;
-    color:var(--text-primary); padding:8px 10px; text-align:center;
+    color:var(--text-primary); padding:8px 10px; min-height:44px; text-align:center;
   }
   .setpoint-input:focus { outline:none; border-color:var(--brand-orange); }
   .control-btn {
     font-family:'Rajdhani',sans-serif; font-weight:600; font-size:14px;
     letter-spacing:2px; text-transform:uppercase; color:var(--text-primary);
     background:var(--surface-2); border:1px solid var(--border-dim); border-radius:4px;
-    padding:12px; cursor:pointer; transition:all 0.15s ease;
+    padding:12px; min-height:44px; cursor:pointer; transition:all 0.15s ease;
     -webkit-tap-highlight-color:transparent; user-select:none;
   }
   .control-btn.active { border-color:var(--brand-teal); background:var(--tint-teal); color:var(--brand-teal); }
@@ -1245,7 +1246,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   .brew-step.is-current .brew-step-bar { background:var(--brand-orange); box-shadow:0 0 6px rgba(245,148,31,0.6); }
   .brew-step.is-current .brew-step-label { color:var(--brand-orange); font-weight:700; }
   .brew-clock {
-    display:flex; justify-content:flex-end; gap:8px; margin-top:6px;
+    display:flex; justify-content:flex-end; align-items:center; gap:8px; margin-top:6px;
     font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:1px; color:var(--text-dim);
   }
   #brew-total-timer { color:var(--text-primary); }
@@ -1282,8 +1283,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   .leave-confirm-btn:active { transform:scale(0.97); }
   .brew-log-btn {
     background:none; border:1px solid var(--border-dim); border-radius:4px;
-    font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; color:var(--text-dim);
-    padding:3px 8px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:1px; color:var(--text-dim);
+    padding:0 14px; min-height:44px; cursor:pointer; -webkit-tap-highlight-color:transparent;
   }
   .brew-log-btn:nth-child(2) { margin-right:auto; }
   .brew-log-btn:active { transform:scale(0.95); }
@@ -1327,10 +1328,11 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     color:var(--brand-orange);
   }
   .brew-warning-dismiss {
-    font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
+    font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600;
     letter-spacing:1px; text-transform:uppercase; color:var(--brand-orange);
     background:none; border:1px solid var(--brand-orange); border-radius:4px;
-    padding:5px 10px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    padding:5px 14px; min-height:44px; min-width:84px;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
     flex-shrink:0;
   }
   .brew-warning-dismiss:active { transform:scale(0.95); }
@@ -1370,10 +1372,11 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   .brew-hop-alert .brew-list-row { border-top-color:var(--teal-line); }
   .brew-hop-alert .brew-list-val { color:var(--brand-teal); }
   .brew-hop-alert-dismiss {
-    font-family:'Rajdhani',sans-serif; font-size:12px; font-weight:600;
+    font-family:'Rajdhani',sans-serif; font-size:13px; font-weight:600;
     letter-spacing:1px; text-transform:uppercase; color:var(--brand-teal);
     background:none; border:1px solid var(--brand-teal); border-radius:4px;
-    padding:5px 10px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    padding:5px 14px; min-height:44px; min-width:84px;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
     flex-shrink:0;
   }
   .brew-hop-alert-dismiss:active { transform:scale(0.95); }
@@ -1873,7 +1876,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   <div class="brew-strip">
     <div class="brew-stepper" id="brew-stepper"></div>
     <div class="brew-clock"><button class="brew-log-btn" onclick="peekRecipe()">Recipe</button><button class="brew-log-btn" onclick="downloadBrewLog()">Download log</button><span>BREW DAY</span><span id="brew-total-timer">00:00:00</span></div>
-    <div class="brew-wake-warn" id="brew-wake-warn">Screen may turn off - keep this phone awake yourself</div>
+    <div class="brew-wake-warn" id="brew-wake-warn">Screen may turn off - keep the phone awake</div>
   </div>
 
   <div class="brew-body">
