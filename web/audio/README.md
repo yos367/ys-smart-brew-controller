@@ -1,10 +1,10 @@
-Drop brew-stage alert `.mp3` clips here, then run `python scripts/embed_audio.py`
-and rebuild. Files in this folder are not read by the firmware directly -
-they get baked into `src/main.cpp` as PROGMEM byte arrays (same reason as
-the logos - no filesystem-backed static assets in this project, see
-DECISIONS.md) and served by the single generic `/audio?file=<name>` route.
+Stage-announcement voice clips (`.mp3`). **Currently NOT used or embedded** -
+the voice-audio system was removed from the firmware and the page (flash
+space + simplicity) and comes back once a microSD card module is wired in.
+Keep these files: they cost nothing here and will be needed again. Do not
+run `scripts/embed_audio.py` until that hardware step is underway (before
+buying the module, confirm a free GPIO for its CS line).
 
-Currently expected by the Water Prep stage (`web/ys-boot.html`, `STAGES`):
-- `water_prep_fill.mp3` - "Fill vessel with water."
-- `water_prep_heating.mp3` - "Starting heating to strike temperature."
-- `water_prep_ready.mp3` - "Water is ready."
+Which clip belongs to which step: the `audio:` event ids on the stage steps
+in `web/ys-boot.html` (e.g. `water_prep_fill`) match these filenames
+(`water_prep_fill.mp3`, ...).

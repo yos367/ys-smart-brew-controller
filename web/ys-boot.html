@@ -1993,7 +1993,6 @@ const BREW_HEATING_GRACE_MS = 1500;
 
 function startBrewing() {
   if (!currentRecipe) return;
-  unlockBrewAudio();
   brewActive = true;
   resetBrewGraph();
   importRecipeEl.classList.remove('visible');
@@ -2017,7 +2016,6 @@ function startStage(stageId) {
   const step = stage.steps[0];
   if (step.onEnter) step.onEnter();
   renderBrewStep();
-  playAudioEvent(step.audio);
 }
 
 function advanceBrewStep(index) {
@@ -2030,7 +2028,6 @@ function advanceBrewStep(index) {
   const step = stage.steps[index];
   if (step.onEnter) step.onEnter();
   renderBrewStep();
-  playAudioEvent(step.audio);
 }
 
 function renderBrewStep() {
@@ -2139,7 +2136,6 @@ function dismissBrewWarning() {
 function showBrewHopAlert(text) {
   brewHopAlertTextEl.textContent = text;
   brewHopAlertEl.style.display = '';
-  playAudioEvent('boil_hop_addition');
 }
 
 function dismissBrewHopAlert() {
@@ -2247,65 +2243,10 @@ function handleBrewManual(m) {
   }
 }
 
-// ── Audio (see stage README / recipe-display work) ──────────────────────
-// Pre-recorded clips only, played via the Web Audio API - never live TTS
-// in the browser. Generic filename lookup so adding a clip for a future
-// stage is: drop the mp3 in web/audio/, add one line to AUDIO_FILES, done.
-// TODO: buzzer support when hardware available - this only ever plays
-// through the browser tab, there is no physical alert yet.
-const AUDIO_FILES = {
-  water_prep_fill: 'water_prep_fill.mp3',
-  water_prep_heating: 'water_prep_heating.mp3',
-  water_prep_ready: 'water_prep_ready.mp3',
-  dough_in_add_grain: 'dough_in_add_grain.mp3',
-  mash_step_heating: 'mash_step_heating.mp3',
-  mash_step_temp_reached: 'mash_step_temp_reached.mp3',
-  mash_step_time_complete: 'mash_step_time_complete.mp3',
-  boil_heating: 'boil_heating.mp3',
-  boil_confirm_prompt: 'boil_confirm_prompt.mp3',
-  boil_hop_addition: 'boil_hop_addition.mp3',
-  boil_complete: 'boil_complete.mp3',
-  whirlpool_start: 'whirlpool_start.mp3',
-  chill_start: 'chill_start.mp3',
-  brew_day_complete: 'brew_day_complete.mp3',
-};
-let brewAudioCtx = null;
-const brewAudioBuffers = {};
-
-// Browsers block audio until a real user gesture unlocks the AudioContext.
-// Called from startBrewing(), itself only ever reached via the "Start
-// Brewing" button click - so this always runs inside a genuine gesture,
-// even though the clips it later plays are triggered by WS data, not
-// clicks.
-function unlockBrewAudio() {
-  if (!brewAudioCtx) {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    if (!Ctx) return;
-    brewAudioCtx = new Ctx();
-  }
-  if (brewAudioCtx.state === 'suspended') brewAudioCtx.resume();
-}
-
-async function playAudioEvent(eventName) {
-  const filename = AUDIO_FILES[eventName];
-  if (!filename || !brewAudioCtx) return;
-  try {
-    let buffer = brewAudioBuffers[eventName];
-    if (!buffer) {
-      const resp = await fetch('/audio?file=' + encodeURIComponent(filename));
-      if (!resp.ok) return;
-      const arrayBuf = await resp.arrayBuffer();
-      buffer = await brewAudioCtx.decodeAudioData(arrayBuf);
-      brewAudioBuffers[eventName] = buffer;
-    }
-    const src = brewAudioCtx.createBufferSource();
-    src.buffer = buffer;
-    src.connect(brewAudioCtx.destination);
-    src.start(0);
-  } catch (e) {
-    // A missing/corrupt clip must never block the brew flow itself.
-  }
-}
+// Voice audio is removed for now (flash space + simplicity); it comes back
+// once a microSD card is wired in. The `audio:` ids on the stage steps below
+// are the event names for that - nothing plays them at the moment. The mp3s
+// stay in web/audio/ and scripts/embed_audio.py stays in the repo.
 
 // ── Live temperature graph (plain canvas, no library - this page has no
 // internet access to fetch one from, see the embedded-fonts note above) ──
