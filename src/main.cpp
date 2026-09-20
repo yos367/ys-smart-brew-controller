@@ -1259,27 +1259,27 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; color:var(--brand-orange);
   }
   .brew-wake-warn.visible { display:block; }
-  .brew-confirm-backdrop {
+  .leave-confirm-backdrop {
     display:none; position:fixed; inset:0; z-index:200;
     background:rgba(0,0,0,0.72); align-items:center; justify-content:center; padding:20px;
   }
-  .brew-confirm-backdrop.visible { display:flex; }
-  .brew-confirm-box {
+  .leave-confirm-backdrop.visible { display:flex; }
+  .leave-confirm-box {
     width:min(360px,100%); background:var(--panel-bg); border:1px solid var(--brand-orange);
     border-radius:6px; padding:20px; display:flex; flex-direction:column; gap:14px;
   }
-  .brew-confirm-title {
+  .leave-confirm-title {
     font-family:'Rajdhani',sans-serif; font-size:20px; font-weight:700; letter-spacing:1px;
     text-transform:uppercase; color:var(--brand-orange);
   }
-  .brew-confirm-text { font-family:'Rajdhani',sans-serif; font-size:16px; color:var(--text-primary); line-height:1.35; }
-  .brew-confirm-btn {
+  .leave-confirm-text { font-family:'Rajdhani',sans-serif; font-size:16px; color:var(--text-primary); line-height:1.35; }
+  .leave-confirm-btn {
     font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
     border-radius:4px; padding:14px; cursor:pointer; -webkit-tap-highlight-color:transparent;
     background:var(--surface-2); color:var(--text-primary); border:1px solid var(--border-dim);
   }
-  .brew-confirm-btn.primary { background:var(--brand-orange); color:var(--on-accent); border-color:var(--brand-orange); }
-  .brew-confirm-btn:active { transform:scale(0.97); }
+  .leave-confirm-btn.primary { background:var(--brand-orange); color:var(--on-accent); border-color:var(--brand-orange); }
+  .leave-confirm-btn:active { transform:scale(0.97); }
   .brew-log-btn {
     background:none; border:1px solid var(--border-dim); border-radius:4px;
     font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; color:var(--text-dim);
@@ -1849,12 +1849,12 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
 <div id="brew-cook">
   <!-- Shown by requestExitBrewCook() when heating is running. Stay is the
        first/primary choice: an accidental tap must not stop the heater. -->
-  <div class="brew-confirm-backdrop" id="brew-leave-confirm">
-    <div class="brew-confirm-box">
-      <div class="brew-confirm-title">Heating is on</div>
-      <div class="brew-confirm-text">Going back stops all heating (RIMS and Boil). The brew-day timer and log stop too. Leave anyway?</div>
-      <button class="brew-confirm-btn primary" onclick="cancelLeaveBrewCook()">Stay on this screen</button>
-      <button class="brew-confirm-btn" onclick="confirmLeaveBrewCook()">Stop heating and go back</button>
+  <div class="leave-confirm-backdrop" id="brew-leave-confirm">
+    <div class="leave-confirm-box">
+      <div class="leave-confirm-title">Heating is on</div>
+      <div class="leave-confirm-text">Going back stops all heating (RIMS and Boil). The brew-day timer and log stop too. Leave anyway?</div>
+      <button class="leave-confirm-btn primary" onclick="cancelLeaveBrewCook()">Stay on this screen</button>
+      <button class="leave-confirm-btn" onclick="confirmLeaveBrewCook()">Stop heating and go back</button>
     </div>
   </div>
   <div class="topbar">
