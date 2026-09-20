@@ -670,6 +670,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     --brand-teal:   #2a9d9d;
     --border-dim:   #2a3040;
     --panel-bg:     #12151f;
+    --state-green:  #34c759;
+    --state-red:    #ff4d4f;
   }
 
   *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
@@ -1286,14 +1288,25 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     color:var(--brand-orange); white-space:nowrap;
   }
 
+  .brew-temps { display:flex; gap:12px; }
   .brew-temp-hero {
+    flex:1; min-width:0;
     background:var(--panel-bg); border:1px solid var(--border-dim);
-    border-radius:4px; padding:20px; text-align:center;
+    border-radius:4px; padding:18px 8px; text-align:center;
   }
   .brew-temp-value {
-    font-family:'Rajdhani',sans-serif; font-size:56px; font-weight:700;
-    color:var(--text-primary); line-height:1;
+    font-family:'Rajdhani',sans-serif; font-size:clamp(34px, 11vw, 46px); font-weight:700;
+    color:var(--text-primary); line-height:1; white-space:nowrap;
+    transition:color 0.3s ease;
   }
+  /* State colors for the stage's controlling sensor (see brewTempState()).
+     Red/green were reserved for real safety status elsewhere in this file;
+     here green means "at target" and red means "outside the allowed range
+     or no valid reading" - the brief explicitly asked for these three. */
+  .brew-temp-value.temp-heating { color:var(--brand-orange); }
+  .brew-temp-value.temp-ok      { color:var(--state-green); }
+  .brew-temp-value.temp-danger  { color:var(--state-red); }
+  .brew-temp-sensor { color:var(--text-dimmer); font-size:9px; letter-spacing:1px; margin-left:4px; }
   .brew-temp-label {
     font-family:'Share Tech Mono',monospace; font-size:10px;
     letter-spacing:2px; color:var(--text-dimmer); margin-top:6px;
@@ -1745,11 +1758,19 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       <button class="brew-warning-dismiss" onclick="dismissBrewWarning()">Dismiss</button>
     </div>
 
-    <div class="brew-temp-hero">
-      <div class="brew-temp-value" id="brew-temp-value">--</div>
-      <!-- Text set by handleBrewManual() per stage.sensorKey - PT1 for
-           RIMS-based stages (Water Prep, Mash), PT2 for Boil. -->
-      <div class="brew-temp-label" id="brew-temp-label">CURRENT TEMPERATURE (PT1)</div>
+    <!-- Both sensors always visible. PT1 is always "RIMS"; PT2's label
+         follows the stage (MASH TEMP through Mash, BOIL from Boil on) - set
+         by handleBrewManual(). The coloring (green/orange/red) applies to the
+         stage's controlling sensor only. -->
+    <div class="brew-temps">
+      <div class="brew-temp-hero">
+        <div class="brew-temp-value" id="brew-temp-value-pt1">--</div>
+        <div class="brew-temp-label"><span id="brew-temp-label-pt1">RIMS</span> <span class="brew-temp-sensor">PT1</span></div>
+      </div>
+      <div class="brew-temp-hero">
+        <div class="brew-temp-value" id="brew-temp-value-pt2">--</div>
+        <div class="brew-temp-label"><span id="brew-temp-label-pt2">MASH TEMP</span> <span class="brew-temp-sensor">PT2</span></div>
+      </div>
     </div>
 
     <!-- Whirlpool only, and only when the recipe has hop-stand hops -
@@ -1852,6 +1873,18 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
         <div class="settings-note">Every step that waits for you to press Continue beeps repeatedly until you press Continue or Silence Alert. Check it works before brew day.</div>
         <button class="timer-btn" onclick="testBeep()">Test Beep</button>
         <div class="import-status" id="settings-beep-status"></div>
+      </div>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Target Reached Tolerance</div>
+      <div class="settings-row">
+        <div class="settings-note">A heating step counts as "target reached" once the temperature is within this many degrees BELOW its target. 0 = must reach the target exactly (how it has always worked). Also decides when the big readout turns green.</div>
+        <div class="setpoint-row">
+          <div class="setpoint-label">Tolerance &deg;C</div>
+          <input type="number" class="setpoint-input" id="settings-target-tol" min="0" max="5" step="0.1" onchange="onTargetTolChange()">
+        </div>
+        <div class="import-status" id="settings-tol-status"></div>
       </div>
     </div>
   </div>
@@ -2048,6 +2081,8 @@ const loadRecipeEmptyEl = document.getElementById('load-recipe-empty');
 const wifiSetupEl = document.getElementById('wifi-setup');
 const settingsEl = document.getElementById('settings');
 const settingsBeepStatusEl = document.getElementById('settings-beep-status');
+const settingsTargetTolEl = document.getElementById('settings-target-tol');
+const settingsTolStatusEl = document.getElementById('settings-tol-status');
 const brewSilenceBtnEl = document.getElementById('brew-silence');
 const wifiCurrentStatusEl = document.getElementById('wifi-current-status');
 const wifiStopBtnEl = document.getElementById('wifi-stop-btn');
@@ -2069,7 +2104,9 @@ const brewfatherListItemsEl = document.getElementById('brewfather-list-items');
 const brewCookEl = document.getElementById('brew-cook');
 const brewStageNameEl = document.getElementById('brew-stage-name');
 const brewStageNextEl = document.getElementById('brew-stage-next');
-const brewTempValueEl = document.getElementById('brew-temp-value');
+const brewTempValuePt1El = document.getElementById('brew-temp-value-pt1');
+const brewTempValuePt2El = document.getElementById('brew-temp-value-pt2');
+const brewTempLabelPt2El = document.getElementById('brew-temp-label-pt2');
 const brewPowerValueEl = document.getElementById('brew-power-value');
 const brewPump1BtnEl = document.getElementById('brew-pump1-btn');
 const brewPump1StateEl = document.getElementById('brew-pump1-state');
@@ -2080,7 +2117,6 @@ const brewConfirmBtnEl = document.getElementById('brew-confirm-btn');
 const brewGraphCanvasEl = document.getElementById('brew-graph');
 const brewWarningEl = document.getElementById('brew-warning');
 const brewWarningTextEl = document.getElementById('brew-warning-text');
-const brewTempLabelEl = document.getElementById('brew-temp-label');
 const brewHopAlertEl = document.getElementById('brew-hop-alert');
 const brewHopAlertTextEl = document.getElementById('brew-hop-alert-text');
 const brewHopstandEl = document.getElementById('brew-hopstand');
@@ -2807,6 +2843,31 @@ function dismissBrewHopAlert() {
   stopBeeping(); // acknowledging the alert silences its beep; the countdown is untouched
 }
 
+// Overshoot beyond the stage target that turns the readout red. No safe
+// range existed anywhere in this codebase (only a 0-150 C boot check and a
+// -50..200 C read-validity check), so this is a NEW, deliberately single,
+// named value - change it here if 5 C is wrong for your rig.
+const BREW_OVERSHOOT_RED_C = 5;
+
+// green = at/near target, orange = still heating (below target), red = no
+// valid reading or beyond target + BREW_OVERSHOOT_RED_C; stages with no
+// target (Dough In, Whirlpool, Chill, end screen) stay neutral. Only the
+// stage's controlling sensor gets the target-based color; any ERR is red.
+function brewTempState(temp, isControlling) {
+  if (!isNum(temp)) return 'danger';
+  if (!isControlling || brewTargetSetpoint === null) return 'neutral';
+  if (temp > brewTargetSetpoint + BREW_OVERSHOOT_RED_C) return 'danger';
+  if (temp >= brewTargetSetpoint - settings.targetTolC) return 'ok';
+  return 'heating';
+}
+
+function applyBrewTempState(el, temp, isControlling) {
+  const st = brewTempState(temp, isControlling);
+  el.classList.toggle('temp-ok', st === 'ok');
+  el.classList.toggle('temp-heating', st === 'heating');
+  el.classList.toggle('temp-danger', st === 'danger');
+}
+
 function handleBrewManual(m) {
   if (!brewActive) return;
 
@@ -2820,8 +2881,14 @@ function handleBrewManual(m) {
   const ssrKey = sensorKey === 'pt2' ? 'ssr2' : 'ssr1';
   const liveTemp = m[sensorKey];
 
-  brewTempValueEl.textContent = isNum(liveTemp) ? liveTemp.toFixed(1) + '°C' : 'ERR';
-  brewTempLabelEl.textContent = 'CURRENT TEMPERATURE (' + (sensorKey === 'pt2' ? 'PT2' : 'PT1') + ')';
+  // Both sensors, always. PT2 is the same physical probe all day; only its
+  // label changes with the stage (MASH TEMP through Mash, BOIL from Boil on),
+  // keyed off the same sensorKey stage awareness as the controlling sensor.
+  brewTempValuePt1El.textContent = isNum(m.pt1) ? m.pt1.toFixed(1) + '°C' : 'ERR';
+  brewTempValuePt2El.textContent = isNum(m.pt2) ? m.pt2.toFixed(1) + '°C' : 'ERR';
+  brewTempLabelPt2El.textContent = sensorKey === 'pt2' ? 'BOIL' : 'MASH TEMP';
+  applyBrewTempState(brewTempValuePt1El, m.pt1, sensorKey === 'pt1');
+  applyBrewTempState(brewTempValuePt2El, m.pt2, sensorKey === 'pt2');
   brewPowerValueEl.textContent = m[ssrKey] ? 'ON' : 'OFF';
   brewPowerValueEl.classList.toggle('on', !!m[ssrKey]);
   brewPump1BtnEl.classList.toggle('on', !!m.relay1);
@@ -2870,7 +2937,7 @@ function handleBrewManual(m) {
   // already satisfies the (unchanged) target, the very next tick advances
   // immediately - no special-casing needed.
   if (step.autoAdvanceOnTemp && !brewTargetReached &&
-      brewTargetSetpoint !== null && isNum(liveTemp) && liveTemp >= brewTargetSetpoint) {
+      brewTargetSetpoint !== null && isNum(liveTemp) && liveTemp >= brewTargetSetpoint - settings.targetTolC) {
     brewTargetReached = true;
     advanceBrewStep(currentStepIndex + 1);
     return;
@@ -2912,6 +2979,42 @@ function handleBrewManual(m) {
 // once a microSD card is wired in. The `audio:` ids on the stage steps below
 // are the event names for that - nothing plays them at the moment. The mp3s
 // stay in web/audio/ and scripts/embed_audio.py stays in the repo.
+
+// ══ SETTINGS (client-side, localStorage) ══
+// Persisted per BROWSER, not per device: the phone and a PC each keep their
+// own values, and a browser that blocks storage just runs on the defaults.
+// (WiFi/Brewfather settings live in the ESP32's SPIFFS because the firmware
+// needs them; these are only ever used by this page, so no flash is spent.)
+const SETTINGS_KEY = 'ys_settings_v1';
+const SETTINGS_DEFAULTS = {
+  // How many degrees BELOW target still counts as "target reached" for the
+  // auto-advance checks. 0 = must reach the target exactly - that is what
+  // the hardcoded check (liveTemp >= target) always did, so 0 is the default.
+  targetTolC: 0,
+};
+function loadSettings() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}');
+    return Object.assign({}, SETTINGS_DEFAULTS, saved);
+  } catch (e) {
+    return Object.assign({}, SETTINGS_DEFAULTS);
+  }
+}
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); return true; } catch (e) { return false; }
+}
+let settings = loadSettings();
+
+function onTargetTolChange() {
+  let v = parseFloat(settingsTargetTolEl.value);
+  if (!isFinite(v)) v = SETTINGS_DEFAULTS.targetTolC;
+  v = Math.min(5, Math.max(0, Math.round(v * 10) / 10));
+  settings.targetTolC = v;
+  settingsTargetTolEl.value = v.toFixed(1);
+  settingsTolStatusEl.textContent = saveSettings()
+    ? 'Saved: ' + v.toFixed(1) + '\u00b0C below target counts as reached.'
+    : 'Applied for this session only - this browser blocks saving settings.';
+}
 
 // ══ ALERT BEEP ══
 // A synthesized tone (Web Audio oscillator - no file, no flash cost) that
@@ -3000,6 +3103,8 @@ function enterSettings() {
   menuEl.classList.remove('visible');
   settingsEl.classList.add('visible');
   settingsBeepStatusEl.textContent = '';
+  settingsTargetTolEl.value = settings.targetTolC.toFixed(1);
+  settingsTolStatusEl.textContent = '';
 }
 
 function exitSettings() {
