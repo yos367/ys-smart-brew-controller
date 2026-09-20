@@ -614,6 +614,18 @@
     font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:1px; color:var(--text-dim);
   }
   #brew-total-timer { color:var(--text-primary); }
+  .brew-log-btn {
+    margin-right:auto; background:none; border:1px solid var(--border-dim); border-radius:4px;
+    font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; color:var(--text-dim);
+    padding:3px 8px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  .brew-log-btn:active { transform:scale(0.95); }
+  .brew-notes {
+    width:100%; resize:vertical; min-height:80px;
+    font-family:'Rajdhani',sans-serif; font-size:16px; background:#161a26; color:var(--text-primary);
+    border:1px solid var(--border-dim); border-radius:4px; padding:10px;
+  }
+  .brew-notes:focus { outline:none; border-color:var(--brand-orange); }
 
   .brew-body {
     width:min(420px,92vw); margin-top:8px;
@@ -1183,7 +1195,7 @@
        and how long it has been running in total. -->
   <div class="brew-strip">
     <div class="brew-stepper" id="brew-stepper"></div>
-    <div class="brew-clock"><span>BREW DAY</span><span id="brew-total-timer">00:00:00</span></div>
+    <div class="brew-clock"><button class="brew-log-btn" onclick="downloadBrewLog()">Download log</button><span>BREW DAY</span><span id="brew-total-timer">00:00:00</span></div>
   </div>
 
   <div class="brew-body">
@@ -1277,6 +1289,21 @@
     <div class="brew-message" id="brew-message">--</div>
 
     <button class="control-btn brew-confirm-btn" id="brew-confirm-btn" onclick="confirmBrewStep()" style="display:none">Confirm</button>
+
+    <!-- Brew day complete only. Whatever is typed here is kept with the log
+         (see brewResult) and written into the CSV when it is downloaded. -->
+    <div class="brew-list-panel" id="brew-summary" style="display:none">
+      <div class="brew-list-title">Brew Day Summary</div>
+      <div class="settings-row">
+        <div class="setpoint-row">
+          <div class="setpoint-label">Original Gravity</div>
+          <input type="text" inputmode="decimal" class="setpoint-input" id="brew-og-input" placeholder="1.050" oninput="onBrewResultInput()">
+        </div>
+        <textarea class="brew-notes" id="brew-notes-input" rows="4" placeholder="Notes - anything worth remembering about this brew day" oninput="onBrewResultInput()"></textarea>
+        <div class="import-status" id="brew-result-status"></div>
+        <button class="control-btn brew-confirm-btn" onclick="downloadBrewLog()">Download Log (CSV)</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1331,6 +1358,15 @@
         <div class="settings-note">Every step that waits for you to press Continue beeps repeatedly until you press Continue or Silence Alert. Check it works before brew day.</div>
         <button class="timer-btn" onclick="testBeep()">Test Beep</button>
         <div class="import-status" id="settings-beep-status"></div>
+      </div>
+    </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">Brew Log</div>
+      <div class="settings-row">
+        <div class="settings-note">Every brew day is logged in this page's memory (temperatures, stage changes, hop-addition times, what you pressed) and exported as a CSV. It is lost if the page is reloaded or closed, so download it when you are done.</div>
+        <div class="import-status" id="settings-log-status"></div>
+        <button class="timer-btn" onclick="downloadBrewLog()">Download Last Brew Log</button>
       </div>
     </div>
 
@@ -1544,6 +1580,11 @@ const settingsTolStatusEl = document.getElementById('settings-tol-status');
 const brewSilenceBtnEl = document.getElementById('brew-silence');
 const brewStepperEl = document.getElementById('brew-stepper');
 const brewTotalTimerEl = document.getElementById('brew-total-timer');
+const brewSummaryEl = document.getElementById('brew-summary');
+const brewOgInputEl = document.getElementById('brew-og-input');
+const brewNotesInputEl = document.getElementById('brew-notes-input');
+const brewResultStatusEl = document.getElementById('brew-result-status');
+const settingsLogStatusEl = document.getElementById('settings-log-status');
 const wifiCurrentStatusEl = document.getElementById('wifi-current-status');
 const wifiStopBtnEl = document.getElementById('wifi-stop-btn');
 const wifiNetworksListEl = document.getElementById('wifi-networks-list');
@@ -1793,6 +1834,7 @@ function toggleControl(prefix) {
 }
 
 function togglePump(n) {
+  if (brewActive) logEvent('pump_toggle_requested', 'pump' + n);
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send('toggle' + n);
   }
@@ -2191,6 +2233,7 @@ const BREW_HEATING_GRACE_MS = 1500;
 function startBrewing() {
   if (!currentRecipe) return;
   ensureBeepAudio(); // this click is the user gesture browsers require to unlock sound
+  resetBrewLog();
   startBrewClock();
   brewActive = true;
   resetBrewGraph();
@@ -2208,6 +2251,8 @@ function startStage(stageId) {
   brewHeatingArmed = false; // the new stage's own steps re-arm this if they heat
   stopBeeping(); // the previous stage's alert is over the moment we move on
   updateStepper(stageId);
+  logEvent('stage_start', stageId);
+  brewSummaryEl.style.display = stageId === 'brew_complete' ? '' : 'none';
   if (stageId === 'brew_complete') stopBrewClock(true); // total time freezes at the end of the flow
   dismissBrewWarning();
   dismissBrewHopAlert();
@@ -2231,6 +2276,7 @@ function advanceBrewStep(index) {
   dismissBrewWarning();
   dismissBrewHopAlert();
   const step = stage.steps[index];
+  logEvent('step', currentStageId + '/' + step.id);
   if (step.onEnter) step.onEnter();
   renderBrewStep();
   alertForCurrentStep();
@@ -2265,6 +2311,7 @@ function renderBrewStep() {
 function confirmBrewStep() {
   const stage = STAGES[currentStageId];
   const step = stage.steps[currentStepIndex];
+  logEvent('continue_pressed', currentStageId + '/' + step.id);
   stopBeeping(); // pressing Continue always silences a beep that's still going
   if (step.onConfirm) step.onConfirm();
 }
@@ -2286,6 +2333,7 @@ function exitBrewCook() {
     ws.send('stop_control');
     ws.send('stop_boil_control');
   }
+  logEvent('brew_screen_exited', '');
   brewHeatingArmed = false;
   brewActive = false;
   stopBeeping();
@@ -2388,6 +2436,7 @@ function hideHopstandHops() {
 }
 
 function showBrewWarning(text) {
+  logEvent('connection_lost_warning', text);
   brewWarningTextEl.textContent = text;
   brewWarningEl.style.display = '';
 }
@@ -2405,6 +2454,7 @@ function dismissBrewWarning() {
 // pattern as the Whirlpool hop-stand list), not a generic "add hops".
 function showBrewHopAlert(alert) {
   brewHopAlertListEl.textContent = '';
+  logEvent('hop_alert', alert.hops.map((h) => h.name + (isNum(h.amount_g) ? ' ' + h.amount_g.toFixed(0) + 'g' : '')).join(', ') + ' (boil_remaining_s=' + brewBoilRemainingSec + ')');
   alert.hops.forEach((h) => appendListRow(brewHopAlertListEl, {
     name: h.name,
     val: isNum(h.amount_g) ? h.amount_g.toFixed(0) + ' g' : '',
@@ -2414,6 +2464,7 @@ function showBrewHopAlert(alert) {
 }
 
 function dismissBrewHopAlert() {
+  if (brewHopAlertEl.style.display !== 'none') logEvent('hop_alert_acknowledged', '(boil_remaining_s=' + brewBoilRemainingSec + ')');
   brewHopAlertEl.style.display = 'none';
   stopBeeping(); // acknowledging the alert silences its beep; the countdown is untouched
 }
@@ -2475,6 +2526,7 @@ function handleBrewManual(m) {
   brewTempLabelPt2El.textContent = sensorKey === 'pt2' ? 'BOIL' : 'MASH TEMP';
   lastBrewTemps = { pt1: m.pt1, pt2: m.pt2 };
   refreshBrewTempColors();
+  logSample(m);
   brewPowerValueEl.textContent = m[ssrKey] ? 'ON' : 'OFF';
   brewPowerValueEl.classList.toggle('on', !!m[ssrKey]);
   brewPump1BtnEl.classList.toggle('on', !!m.relay1);
@@ -2525,6 +2577,7 @@ function handleBrewManual(m) {
   if (step.autoAdvanceOnTemp && !brewTargetReached &&
       brewTargetSetpoint !== null && isNum(liveTemp) && liveTemp >= brewTargetSetpoint - settings.targetTolC) {
     brewTargetReached = true;
+    logEvent('target_reached', 'temp=' + liveTemp + ' target=' + brewTargetSetpoint);
     advanceBrewStep(currentStepIndex + 1);
     return;
   }
@@ -2626,6 +2679,150 @@ function stopBrewClock(freeze) {
   brewClockTimer = null;
   updateBrewClock();
 }
+
+// ══ BREW-DAY LOG (client-side, in this page's memory) ══
+// Everything here is accumulated from telemetry the page already receives and
+// from what the user presses - no ESP32 storage, no flash. One CSV, one row
+// per sample or event, so it opens as a single table. It lives only as long
+// as the page: a reload or a closed tab loses it (download it when done);
+// see the beforeunload warning below.
+const LOG_MAX_SAMPLES = 100000; // about 27 h at one sample per second
+let brewLog = [];               // { t, kind, stage, step, pt1, pt2, ssr1, ssr2, pump1, pump2, ctrlRims, ctrlBoil, target, detail }
+let brewLogSamples = 0;
+let brewLogStartMs = null;
+let brewLogRecipe = '';
+let brewResult = { og: null, notes: '' };
+
+function logRow(kind, fields) {
+  const stage = STAGES[currentStageId];
+  const step = stage && stage.steps[currentStepIndex];
+  brewLog.push(Object.assign({
+    t: Date.now(), kind: kind, stage: currentStageId || '', step: step ? step.id : '',
+    pt1: null, pt2: null, ssr1: null, ssr2: null, pump1: null, pump2: null, ctrlRims: null, ctrlBoil: null,
+    target: brewTargetSetpoint, detail: '',
+  }, fields || {}));
+}
+
+function logEvent(name, detail) {
+  if (brewLogStartMs === null) return;
+  logRow('event', { detail: name + (detail ? ': ' + detail : '') });
+}
+
+function logSample(m) {
+  if (brewLogStartMs === null) return;
+  if (brewLogSamples >= LOG_MAX_SAMPLES) {
+    if (brewLogSamples === LOG_MAX_SAMPLES) { brewLogSamples++; logEvent('sample_cap_reached', 'no more temperature samples are logged'); }
+    return;
+  }
+  brewLogSamples++;
+  logRow('sample', {
+    pt1: isNum(m.pt1) ? m.pt1 : null, pt2: isNum(m.pt2) ? m.pt2 : null,
+    ssr1: m.ssr1 ? 1 : 0, ssr2: m.ssr2 ? 1 : 0, pump1: m.relay1 ? 1 : 0, pump2: m.relay2 ? 1 : 0,
+    ctrlRims: m.control_active ? 1 : 0, ctrlBoil: m.control_active_boil ? 1 : 0,
+  });
+}
+
+function resetBrewLog() {
+  brewLog = [];
+  brewLogSamples = 0;
+  brewLogStartMs = Date.now();
+  brewLogRecipe = (currentRecipe && currentRecipe.name) || 'Untitled Recipe';
+  brewResult = { og: null, notes: '' };
+  brewOgInputEl.value = '';
+  brewNotesInputEl.value = '';
+  brewResultStatusEl.textContent = '';
+  logRow('meta', { stage: '', step: '', target: null, detail: 'recipe: ' + brewLogRecipe });
+  logRow('meta', { stage: '', step: '', target: null, detail: 'device: ' + (window.location.hostname || 'unknown') });
+  logRow('meta', { stage: '', step: '', target: null, detail: 'target_reached_tolerance_c: ' + settings.targetTolC });
+}
+
+// Spreadsheet-safe: text is always quoted, and a cell starting with = + - @
+// (or a tab/CR) gets a leading ' so a recipe name or note cannot run as a
+// formula when the CSV is opened in Excel/Sheets.
+function csvText(v) {
+  let t = String(v === null || v === undefined ? '' : v);
+  if (/^[=+\-@\t\r]/.test(t)) t = "'" + t;
+  return '"' + t.replace(/"/g, '""') + '"';
+}
+function csvNum(v) {
+  return (v === null || v === undefined || (typeof v === 'number' && !isFinite(v))) ? '' : String(v);
+}
+function pad2(n) { return String(n).padStart(2, '0'); }
+function fmtLocalTs(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+}
+
+const LOG_HEADER = ['time', 'elapsed_s', 'kind', 'stage', 'step', 'pt1_c', 'pt2_c', 'ssr1', 'ssr2', 'pump1', 'pump2', 'control_rims', 'control_boil', 'target_c', 'detail'];
+
+function buildBrewLogCsv() {
+  const lines = [LOG_HEADER.join(',')];
+  const toLine = (r) => [
+    csvText(fmtLocalTs(r.t)), csvNum(Math.round((r.t - brewLogStartMs) / 100) / 10), csvText(r.kind), csvText(r.stage), csvText(r.step),
+    csvNum(r.pt1), csvNum(r.pt2), csvNum(r.ssr1), csvNum(r.ssr2), csvNum(r.pump1), csvNum(r.pump2),
+    csvNum(r.ctrlRims), csvNum(r.ctrlBoil), csvNum(r.target), csvText(r.detail),
+  ].join(',');
+  brewLog.forEach((r) => lines.push(toLine(r)));
+  // Results typed on the Brew day complete screen, written as of the moment of export.
+  const now = Date.now();
+  const res = (detail) => toLine({ t: now, kind: 'result', stage: currentStageId || '', step: '', pt1: null, pt2: null, ssr1: null, ssr2: null,
+    pump1: null, pump2: null, ctrlRims: null, ctrlBoil: null, target: null, detail: detail });
+  if (brewResult.og !== null) lines.push(res('original_gravity: ' + brewResult.og.toFixed(3)));
+  if (brewResult.notes.trim()) lines.push(res('notes: ' + brewResult.notes));
+  return lines.join('\r\n') + '\r\n';
+}
+
+function brewLogFilename() {
+  const slug = brewLogRecipe.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'brew';
+  const d = new Date(brewLogStartMs);
+  return 'ys-brewday-' + slug + '-' + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) + '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + '.csv';
+}
+
+function downloadBrewLog() {
+  if (brewLogStartMs === null || !brewLog.length) {
+    brewResultStatusEl.textContent = 'No brew has been logged yet.';
+    settingsLogStatusEl.textContent = 'No brew has been logged yet.';
+    return;
+  }
+  // BOM so Excel reads the UTF-8 (recipe names / notes in any language) correctly.
+  const blob = new Blob(['\ufeff' + buildBrewLogCsv()], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = brewLogFilename();
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+function onBrewResultInput() {
+  brewResult.notes = brewNotesInputEl.value;
+  const raw = brewOgInputEl.value.trim().replace(',', '.');
+  if (raw === '') {
+    brewResult.og = null;
+    brewResultStatusEl.textContent = brewResult.notes.trim() ? 'Notes will be included in the log.' : '';
+    return;
+  }
+  const v = parseFloat(raw);
+  if (isFinite(v) && v >= 0.99 && v <= 1.2) {
+    brewResult.og = v;
+    brewResultStatusEl.textContent = 'OG ' + v.toFixed(3) + (brewResult.notes.trim() ? ' and notes' : '') + ' will be included in the log.';
+  } else {
+    brewResult.og = null;
+    brewResultStatusEl.textContent = 'OG not saved - expected something like 1.050.';
+  }
+}
+
+function refreshLogStatus() {
+  settingsLogStatusEl.textContent = brewLog.length
+    ? brewLogRecipe + ' - ' + brewLog.length + ' rows (' + brewLogSamples + ' temperature samples)'
+    : 'No brew has been logged yet.';
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if (brewActive && brewLog.length > 30) { e.preventDefault(); e.returnValue = ''; }
+});
 
 // ══ SETTINGS (client-side, localStorage) ══
 // Persisted per BROWSER, not per device: the phone and a PC each keep their
@@ -2731,6 +2928,7 @@ function stopBeeping() {
 }
 
 function silenceBeep() {
+  logEvent('alert_silenced', '');
   stopBeeping();
 }
 
@@ -2749,6 +2947,7 @@ function alertForCurrentStep() {
 function enterSettings() {
   menuEl.classList.remove('visible');
   settingsEl.classList.add('visible');
+  refreshLogStatus();
   settingsBeepStatusEl.textContent = '';
   settingsTargetTolEl.value = settings.targetTolC.toFixed(1);
   settingsTolStatusEl.textContent = '';
