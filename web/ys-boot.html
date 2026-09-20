@@ -614,6 +614,27 @@
     font-family:'Share Tech Mono',monospace; font-size:11px; letter-spacing:1px; color:var(--text-dim);
   }
   #brew-total-timer { color:var(--text-primary); }
+  .brew-confirm-backdrop {
+    display:none; position:fixed; inset:0; z-index:200;
+    background:rgba(0,0,0,0.72); align-items:center; justify-content:center; padding:20px;
+  }
+  .brew-confirm-backdrop.visible { display:flex; }
+  .brew-confirm-box {
+    width:min(360px,100%); background:var(--panel-bg); border:1px solid var(--brand-orange);
+    border-radius:6px; padding:20px; display:flex; flex-direction:column; gap:14px;
+  }
+  .brew-confirm-title {
+    font-family:'Rajdhani',sans-serif; font-size:20px; font-weight:700; letter-spacing:1px;
+    text-transform:uppercase; color:var(--brand-orange);
+  }
+  .brew-confirm-text { font-family:'Rajdhani',sans-serif; font-size:16px; color:var(--text-primary); line-height:1.35; }
+  .brew-confirm-btn {
+    font-family:'Rajdhani',sans-serif; font-size:16px; font-weight:700; letter-spacing:1px; text-transform:uppercase;
+    border-radius:4px; padding:14px; cursor:pointer; -webkit-tap-highlight-color:transparent;
+    background:#161a26; color:var(--text-primary); border:1px solid var(--border-dim);
+  }
+  .brew-confirm-btn.primary { background:var(--brand-orange); color:#1a1f2e; border-color:var(--brand-orange); }
+  .brew-confirm-btn:active { transform:scale(0.97); }
   .brew-log-btn {
     margin-right:auto; background:none; border:1px solid var(--border-dim); border-radius:4px;
     font-family:'Share Tech Mono',monospace; font-size:10px; letter-spacing:1px; color:var(--text-dim);
@@ -1180,9 +1201,19 @@
      Prep is the only implemented stage; this markup is generic on purpose
      so the next stage reuses it without new HTML) -->
 <div id="brew-cook">
+  <!-- Shown by requestExitBrewCook() when heating is running. Stay is the
+       first/primary choice: an accidental tap must not stop the heater. -->
+  <div class="brew-confirm-backdrop" id="brew-leave-confirm">
+    <div class="brew-confirm-box">
+      <div class="brew-confirm-title">Heating is on</div>
+      <div class="brew-confirm-text">Going back stops all heating (RIMS and Boil). The brew-day timer and log stop too. Leave anyway?</div>
+      <button class="brew-confirm-btn primary" onclick="cancelLeaveBrewCook()">Stay on this screen</button>
+      <button class="brew-confirm-btn" onclick="confirmLeaveBrewCook()">Stop heating and go back</button>
+    </div>
+  </div>
   <div class="topbar">
     <div class="manual-topbar-left">
-      <button class="back-btn" onclick="exitBrewCook()">&lsaquo; Back</button>
+      <button class="back-btn" onclick="requestExitBrewCook()">&lsaquo; Back</button>
     </div>
     <div class="topbar-right">
       <div class="online-dot"></div>
@@ -1579,6 +1610,7 @@ const settingsTargetTolEl = document.getElementById('settings-target-tol');
 const settingsTolStatusEl = document.getElementById('settings-tol-status');
 const brewSilenceBtnEl = document.getElementById('brew-silence');
 const brewStepperEl = document.getElementById('brew-stepper');
+const brewLeaveConfirmEl = document.getElementById('brew-leave-confirm');
 const brewTotalTimerEl = document.getElementById('brew-total-timer');
 const brewSummaryEl = document.getElementById('brew-summary');
 const brewOgInputEl = document.getElementById('brew-og-input');
@@ -2322,6 +2354,28 @@ function enterBrewCook() {
   resizeBrewGraph();
 }
 
+// Heating counts as "on" if the device reports either control loop running,
+// or this page has just armed one (the device's echo can lag a moment). Only
+// then does Back ask first - with everything idle it just leaves, as before.
+let brewLoopsReported = false;
+
+function requestExitBrewCook() {
+  const heating = brewLoopsReported || brewHeatingArmed;
+  if (!heating) { exitBrewCook(); return; }
+  logEvent('leave_confirm_shown', '');
+  brewLeaveConfirmEl.classList.add('visible');
+}
+
+function cancelLeaveBrewCook() {
+  logEvent('leave_confirm_stay', '');
+  brewLeaveConfirmEl.classList.remove('visible');
+}
+
+function confirmLeaveBrewCook() {
+  brewLeaveConfirmEl.classList.remove('visible');
+  exitBrewCook();
+}
+
 function exitBrewCook() {
   // Leaving this screen must never leave heating running unsupervised -
   // the WebSocket itself staying open (same page, different screen) would
@@ -2334,6 +2388,8 @@ function exitBrewCook() {
     ws.send('stop_boil_control');
   }
   logEvent('brew_screen_exited', '');
+  brewLeaveConfirmEl.classList.remove('visible');
+  brewLoopsReported = false;
   brewHeatingArmed = false;
   brewActive = false;
   stopBeeping();
@@ -2525,6 +2581,7 @@ function handleBrewManual(m) {
   brewTempValuePt2El.textContent = isNum(m.pt2) ? m.pt2.toFixed(1) + '°C' : 'ERR';
   brewTempLabelPt2El.textContent = sensorKey === 'pt2' ? 'BOIL' : 'MASH TEMP';
   lastBrewTemps = { pt1: m.pt1, pt2: m.pt2 };
+  brewLoopsReported = !!(m.control_active || m.control_active_boil);
   refreshBrewTempColors();
   logSample(m);
   brewPowerValueEl.textContent = m[ssrKey] ? 'ON' : 'OFF';
