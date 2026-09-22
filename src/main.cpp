@@ -10,6 +10,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <base64.h>
+#include <Preferences.h>
 
 // --- PT100 sensors (software SPI) ---
 // 2026-09-03: the two boards share NOTHING - each has its own SCK, MISO,
@@ -205,10 +206,9 @@ char sharedLine1[LCD_COLS + 8] = "";
 // it was actually left OFF for safety.
 bool ssr1On = false;
 
-// Simple on/off bang-bang only, no PID yet. Manual and CLEAN currently
-// share this exact same logic and the exact same underlying state -
-// per the spec, the only real difference between them right now is which
-// screen the user is looking at, not the control behavior. controlSetpoint
+// Simple on/off bang-bang only, no PID yet. Used by Manual and the Water
+// Prep/Mash brew stages. (CLEAN used to share it too; since 2026-09-22 it
+// has its own loop on SSR2/PT100 B - see runCleanControlLoop().) controlSetpoint
 // is NAN until a client sends "start_control:<value>". This loop always
 // drives SSR1/RIMS via PT100 A - see runBoilControlLoop() below for the
 // separate SSR2/Boil loop over PT100 B.
@@ -226,6 +226,35 @@ float controlSetpoint = NAN;
 bool ssr2On = false;
 bool controlActiveBoil = false;
 float controlSetpointBoil = NAN;
+
+// --- CLEAN (CIP) heat control (2026-09-22, see DECISIONS.md) --------------
+// Third loop, separate from both of the above: CLEAN heats Vessel B with
+// the Boil element (SSR2/GPIO33) from PT100 B, on/off with a differential
+// (hysteresis) band - not the RIMS loop Manual uses. Own WS commands
+// (start_clean/stop_clean), own state, so Manual/RIMS/Boil are untouched.
+// cleanSsrOn is what CLEAN last wrote to SSR2 - kept apart from ssr2On
+// (the Boil loop's) so neither loop's log/UI ever reports the other's pin.
+// Pumps are never touched by this loop - they stay manual only.
+#define CLEAN_MIN_SETPOINT_C 30.0f
+#define CLEAN_MAX_SETPOINT_C 70.0f
+#define CLEAN_DIFF_DEFAULT_C 1.0f
+#define CLEAN_DIFF_MIN_C     0.2f
+#define CLEAN_DIFF_MAX_C     5.0f
+bool cleanActive = false;
+float cleanSetpoint = NAN;
+float cleanDiffC = CLEAN_DIFF_DEFAULT_C; // loaded from NVS in setup()
+bool cleanSsrOn = false;
+unsigned long cleanLastSwitchMs = 0;
+// Highest PT2 reading since the last OFF - printed at the next ON (or at
+// stop) so the Serial log shows how far above target the element's stored
+// heat carried the water after it was cut.
+float cleanPeakSinceOff = NAN;
+bool cleanTrackPeak = false; // true from an OFF until the next ON/stop
+
+// Non-volatile storage (ESP32 NVS) for controller-side settings that must
+// survive a reboot and don't belong to any one browser. Only the CLEAN
+// differential lives here today.
+Preferences prefs;
 
 // Relays are latched off in setup(); loop() itself never writes to these
 // pins - only onWsEvent()'s "toggle1"/"toggle2" handler does, driven by
@@ -516,15 +545,18 @@ String buildManualJson() {
   json += "\"ssr1\":" + String(ssr1On ? "true" : "false") + ",";
   json += "\"control_active_boil\":" + String(controlActiveBoil ? "true" : "false") + ",";
   json += "\"setpoint_boil\":" + (isnan(controlSetpointBoil) ? String("null") : String(controlSetpointBoil, 1)) + ",";
-  json += "\"ssr2\":" + String(ssr2On ? "true" : "false");
+  json += "\"ssr2\":" + String(ssr2On ? "true" : "false") + ",";
+  json += "\"clean_active\":" + String(cleanActive ? "true" : "false") + ",";
+  json += "\"clean_setpoint\":" + (isnan(cleanSetpoint) ? String("null") : String(cleanSetpoint, 1)) + ",";
+  json += "\"clean_ssr\":" + String(cleanSsrOn ? "true" : "false") + ",";
+  json += "\"clean_diff\":" + String(cleanDiffC, 1);
   json += "}}";
   return json;
 }
 
-// Simple on/off bang-bang control for Manual/CLEAN (see
-// menu-manual-clean-spec.md) - no PID yet, both screens share this exact
-// logic and this exact state today; the only real difference between them
-// right now is which screen sent the command, not the behavior. PT100 A
+// Simple on/off bang-bang control for Manual and the Water Prep/Mash brew
+// stages - no PID yet. CLEAN no longer uses this (see
+// runCleanControlLoop()). PT100 A
 // (healthA) is the controlling sensor - a provisional choice for this
 // bench test, not a decision about which sensor belongs to which vessel
 // (same "not decided yet" status as the SSR1-to-heating-element wiring).
@@ -580,6 +612,81 @@ void runBoilControlLoop(bool tempFreshB, float tempValueB) {
     ssr2On = wantOn;
     setActiveSSR(ssr2On ? SSR_BOIL : SSR_NONE);
   }
+}
+
+// The only place CLEAN switches SSR2, so every ON/OFF gets logged the same
+// way. tempNow may be NAN (sensor fault) - logged as such.
+void cleanSetSsr(bool on, float tempNow, const char *reason) {
+  if (on == cleanSsrOn) return;
+  unsigned long now = millis();
+  float heldSec = (now - cleanLastSwitchMs) / 1000.0f;
+  if (on) {
+    if (!isnan(cleanPeakSinceOff)) {
+      Serial.printf("[clean] peak after last OFF: %.1fC (%+.1fC vs target %.1f)\n",
+                    cleanPeakSinceOff, cleanPeakSinceOff - cleanSetpoint, cleanSetpoint);
+    }
+    cleanPeakSinceOff = NAN;
+    cleanTrackPeak = false;
+  } else {
+    cleanPeakSinceOff = tempNow; // NAN on a sensor cut - next good read seeds it
+    cleanTrackPeak = true;
+  }
+  cleanSsrOn = on;
+  cleanLastSwitchMs = now;
+  setActiveSSR(on ? SSR_BOIL : SSR_NONE);
+  Serial.printf("[clean] SSR2 %s at t=%.1fs PT2=%.1fC target=%.1f diff=%.1f (was %s %.1fs) reason=%s\n",
+                on ? "ON " : "OFF", now / 1000.0f, tempNow, cleanSetpoint, cleanDiffC,
+                on ? "off" : "on", heldSec, reason);
+}
+
+// Ends CLEAN and cuts SSR2. Pins are only touched if CLEAN was actually
+// running - a stray stop_clean (the CLEAN screen's Back always sends one)
+// must never switch off a loop that isn't CLEAN's.
+void stopClean(const char *reason) {
+  if (!cleanActive) return;
+  cleanSetSsr(false, sensorValueOrStale(healthB), reason);
+  setActiveSSR(SSR_NONE); // belt and braces, even if SSR2 was already off
+  cleanActive = false;
+  if (!isnan(cleanPeakSinceOff)) {
+    Serial.printf("[clean] stopped (%s), peak since last OFF so far: %.1fC (%+.1fC vs target %.1f)\n",
+                  reason, cleanPeakSinceOff, cleanPeakSinceOff - cleanSetpoint, cleanSetpoint);
+  } else {
+    Serial.printf("[clean] stopped (%s)\n", reason);
+  }
+  cleanPeakSinceOff = NAN;
+  cleanTrackPeak = false;
+}
+
+// On/off with a differential (hysteresis) band, over PT100 B -> SSR2:
+//   PT2 <  target - diff -> ON
+//   PT2 >= target        -> OFF
+//   in between           -> keep the previous state
+// Stricter than the RIMS/Boil loops on purpose: any cycle without a FRESH
+// PT2 reading cuts SSR2 at once (no STALE_MS grace) - CLEAN precision
+// doesn't matter, so there is nothing to gain by heating on an old number.
+void runCleanControlLoop(bool tempFreshB, float tempValueB) {
+  if (!cleanActive) return;
+
+  if (webSocket.connectedClients() == 0) {
+    stopClean("disconnect");
+    return;
+  }
+
+  if (!tempFreshB || isnan(tempValueB)) {
+    cleanSetSsr(false, NAN, "sensor");
+    return;
+  }
+
+  if (cleanTrackPeak && (isnan(cleanPeakSinceOff) || tempValueB > cleanPeakSinceOff)) {
+    cleanPeakSinceOff = tempValueB;
+  }
+
+  if (tempValueB >= cleanSetpoint) {
+    cleanSetSsr(false, tempValueB, "target");
+  } else if (tempValueB < cleanSetpoint - cleanDiffC) {
+    cleanSetSsr(true, tempValueB, "below_band");
+  }
+  // else: inside the band - hold whatever state SSR2 is in.
 }
 
 // SYNC NOTE: web/ys-boot.html is the ONLY source of truth for this page.
@@ -1649,8 +1756,19 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
   </div>
 </div>
 
-<!-- ══ CLEAN ══ (see menu-manual-clean-spec.md) -->
+<!-- ══ CLEAN ══ Own loop on the controller since 2026-09-22 (see DECISIONS.md):
+     heats Vessel B with the Boil element (SSR2) from PT2, on/off with a
+     differential set in Settings. Pumps stay manual - this screen never
+     switches them. -->
 <div id="clean">
+  <div class="leave-confirm-backdrop" id="clean-start-confirm">
+    <div class="leave-confirm-box">
+      <div class="leave-confirm-title">Before heating</div>
+      <div class="leave-confirm-text">Make sure the Vessel B element is covered with water and the flow is balanced (the water level in Vessel B does not drop while recirculating).</div>
+      <button class="leave-confirm-btn primary" onclick="confirmCleanStart()">Confirmed - start heating</button>
+      <button class="leave-confirm-btn" onclick="cancelCleanStart()">Cancel</button>
+    </div>
+  </div>
   <div class="topbar">
     <div class="manual-topbar-left">
       <button class="back-btn" onclick="exitClean()">&lsaquo; Back</button>
@@ -1683,10 +1801,12 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     <div class="heat-control">
       <div class="setpoint-row">
         <div class="setpoint-label">Setpoint °C</div>
-        <input type="number" class="setpoint-input" id="clean-setpoint-input" step="0.5" placeholder="--">
+        <input type="number" class="setpoint-input" id="clean-setpoint-input" min="30" max="70" step="0.5" placeholder="30-70">
       </div>
-      <button class="control-btn" id="clean-control-btn" onclick="toggleControl('clean')">START</button>
-      <div class="control-status" id="clean-control-status">SSR: OFF</div>
+      <button class="control-btn" id="clean-control-btn" onclick="toggleClean()">START</button>
+      <div class="control-status" id="clean-control-status">SSR2: OFF</div>
+      <div class="import-status error" id="clean-msg"></div>
+      <div class="settings-note" id="clean-note">Heats Vessel B (Boil element, SSR2) using PT2. Differential: -- &deg;C (change in Settings). Pumps are manual only.</div>
     </div>
   </div>
 </div>
@@ -2081,6 +2201,18 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
         <div class="import-status" id="settings-tol-status"></div>
       </div>
     </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">CLEAN Differential</div>
+      <div class="settings-row">
+        <div class="settings-note">CLEAN turns the Vessel B element ON when PT2 drops more than this many degrees below the target, and OFF when PT2 reaches the target. Saved on the controller itself (kept after a restart). Allowed 0.2-5.0.</div>
+        <div class="setpoint-row">
+          <div class="setpoint-label">Differential &deg;C</div>
+          <input type="number" class="setpoint-input" id="settings-clean-diff" min="0.2" max="5" step="0.1" onchange="onCleanDiffChange()">
+        </div>
+        <div class="import-status" id="settings-clean-diff-status"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -2228,6 +2360,11 @@ const cleanPt2El = document.getElementById('clean-pt2');
 const cleanSetpointInput = document.getElementById('clean-setpoint-input');
 const cleanControlBtn = document.getElementById('clean-control-btn');
 const cleanControlStatus = document.getElementById('clean-control-status');
+const cleanMsgEl = document.getElementById('clean-msg');
+const cleanNoteEl = document.getElementById('clean-note');
+const cleanStartConfirmEl = document.getElementById('clean-start-confirm');
+const settingsCleanDiffEl = document.getElementById('settings-clean-diff');
+const settingsCleanDiffStatusEl = document.getElementById('settings-clean-diff-status');
 const importRecipeEl = document.getElementById('import-recipe');
 const importRecipeHeadingEl = document.getElementById('import-recipe-heading');
 const importPickerEl = document.getElementById('import-picker');
@@ -2455,6 +2592,8 @@ function connect() {
         handleBootCheck(msg);
       } else if (msg.manual) {
         handleManual(msg.manual);
+      } else if (msg.clean_error) {
+        cleanMsgEl.textContent = 'Controller rejected the target - it must be between 30 and 70 °C.';
       }
     } catch (e) {
       // Malformed frame - ignore, next push corrects it.
@@ -2481,12 +2620,11 @@ function retrySensorCheck() {
 // regardless of which screen is showing (same always-broadcast model as
 // the rest of this page) - handleManual() just updates the DOM, harmless
 // even while this screen isn't visible.
-// Manual and CLEAN are two views onto the exact same server-side state
-// (see menu-manual-clean-spec.md - "the only real difference right now is
-// which screen, not the behavior"), so a single "manual" broadcast
-// updates both screens' temps and heat-control UI every time, regardless
-// of which one is currently visible - same pattern as everything else on
-// this page.
+// A single "manual" broadcast updates both the Manual and CLEAN screens
+// every time, regardless of which one is visible - same pattern as
+// everything else on this page. Since 2026-09-22 they drive different
+// loops: Manual = RIMS (start_control), CLEAN = its own SSR2/PT2 loop
+// (start_clean, see updateCleanUI()).
 let heatControlActive = false;
 
 function handleManual(m) {
@@ -2503,7 +2641,7 @@ function handleManual(m) {
 
   heatControlActive = !!m.control_active;
   updateControlUI(manualSetpointInput, manualControlBtn, manualControlStatus, m);
-  updateControlUI(cleanSetpointInput, cleanControlBtn, cleanControlStatus, m);
+  updateCleanUI(m);
 
   // Same always-broadcast model as everything above - harmless to call
   // while the brew-cook screen isn't visible, matching Manual/CLEAN.
@@ -2536,6 +2674,87 @@ function toggleControl(prefix) {
   ws.send('start_control:' + value.toFixed(1));
 }
 
+// ── CLEAN ── own loop on the controller (start_clean/stop_clean): Vessel B,
+// Boil element (SSR2), PT2, on/off with the differential from Settings.
+// Pumps are never switched from here.
+const CLEAN_MIN_C = 30, CLEAN_MAX_C = 70;
+let cleanActive = false;
+let cleanDiffC = null; // last value the controller reported
+
+function updateCleanUI(m) {
+  cleanActive = !!m.clean_active;
+  cleanControlBtn.textContent = cleanActive ? 'STOP' : 'START';
+  cleanControlBtn.classList.toggle('active', cleanActive);
+  cleanControlStatus.textContent = 'SSR2: ' + (m.clean_ssr ? 'ON' : 'OFF');
+  cleanControlStatus.classList.toggle('on', !!m.clean_ssr);
+  if (cleanActive && m.clean_setpoint !== null && document.activeElement !== cleanSetpointInput) {
+    cleanSetpointInput.value = m.clean_setpoint;
+  }
+  if (typeof m.clean_diff === 'number') {
+    cleanDiffC = m.clean_diff;
+    cleanNoteEl.textContent = 'Heats Vessel B (Boil element, SSR2) using PT2. Differential: '
+      + cleanDiffC.toFixed(1) + ' °C (change in Settings). Pumps are manual only.';
+    if (document.activeElement !== settingsCleanDiffEl) settingsCleanDiffEl.value = cleanDiffC.toFixed(1);
+  }
+}
+
+// Returns the target, or null (with the reason shown on screen) when it
+// is empty or outside 30-70 - heating never starts on a bad value.
+function readCleanTarget() {
+  const raw = cleanSetpointInput.value.trim();
+  const v = parseFloat(raw);
+  if (raw === '' || !isFinite(v) || v < CLEAN_MIN_C || v > CLEAN_MAX_C) {
+    cleanMsgEl.textContent = 'Enter a target between ' + CLEAN_MIN_C + ' and ' + CLEAN_MAX_C + ' °C.';
+    return null;
+  }
+  return v;
+}
+
+function toggleClean() {
+  cleanMsgEl.textContent = '';
+  if (!(ws && ws.readyState === WebSocket.OPEN)) {
+    cleanMsgEl.textContent = 'Not connected to the controller.';
+    return;
+  }
+  if (cleanActive) {
+    ws.send('stop_clean');
+    return;
+  }
+  if (readCleanTarget() === null) return;
+  cleanStartConfirmEl.classList.add('visible');
+}
+
+function confirmCleanStart() {
+  cleanStartConfirmEl.classList.remove('visible');
+  const v = readCleanTarget();
+  if (v === null) return;
+  if (!(ws && ws.readyState === WebSocket.OPEN)) {
+    cleanMsgEl.textContent = 'Not connected to the controller.';
+    return;
+  }
+  ws.send('start_clean:' + v.toFixed(1));
+}
+
+function cancelCleanStart() {
+  cleanStartConfirmEl.classList.remove('visible');
+}
+
+function onCleanDiffChange() {
+  let v = parseFloat(settingsCleanDiffEl.value);
+  if (!isFinite(v) || v < 0.2 || v > 5) {
+    settingsCleanDiffStatusEl.textContent = 'Must be between 0.2 and 5.0 °C - not saved.';
+    if (cleanDiffC !== null) settingsCleanDiffEl.value = cleanDiffC.toFixed(1);
+    return;
+  }
+  v = Math.round(v * 10) / 10;
+  if (!(ws && ws.readyState === WebSocket.OPEN)) {
+    settingsCleanDiffStatusEl.textContent = 'Not connected to the controller - not saved.';
+    return;
+  }
+  ws.send('set_clean_diff:' + v.toFixed(1));
+  settingsCleanDiffStatusEl.textContent = 'Sent: ' + v.toFixed(1) + ' °C (saved on the controller).';
+}
+
 function togglePump(n) {
   if (brewActive) logEvent('pump_toggle_requested', 'pump' + n);
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -2556,9 +2775,16 @@ function exitManual() {
 function enterClean() {
   menuEl.classList.remove('visible');
   cleanEl.classList.add('visible');
+  cleanMsgEl.textContent = '';
 }
 
+// Leaving CLEAN always stops its heating (SSR2) - same reason as
+// exitBrewCook(): the socket stays open on another screen, so the
+// controller's "no clients" cut-off would never fire. Pumps are left as
+// they are (manual only).
 function exitClean() {
+  cleanStartConfirmEl.classList.remove('visible');
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_clean');
   cleanEl.classList.remove('visible');
   menuEl.classList.add('visible');
 }
@@ -3775,6 +4001,8 @@ function enterSettings() {
   settingsBeepStatusEl.textContent = '';
   settingsTargetTolEl.value = settings.targetTolC.toFixed(1);
   settingsTolStatusEl.textContent = '';
+  settingsCleanDiffStatusEl.textContent = '';
+  if (cleanDiffC !== null) settingsCleanDiffEl.value = cleanDiffC.toFixed(1);
 }
 
 function exitSettings() {
@@ -9547,6 +9775,7 @@ void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length
         // comment for why the server doesn't need to know which screen
         // it came from. Starts safe (off) until the next loop() cycle
         // actually evaluates temp vs. setpoint.
+        stopClean("other_loop_started"); // no-op unless CLEAN is running
         controlSetpoint = msg.substring(String("start_control:").length()).toFloat();
         controlActive = true;
         ssr1On = false;
@@ -9563,6 +9792,7 @@ void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length
         // Separate from start_control above on purpose - this one is
         // SSR2/Boil over PT100 B (see runBoilControlLoop(), DECISIONS.md),
         // the Boil brew stage is the only sender so far.
+        stopClean("other_loop_started"); // no-op unless CLEAN is running
         controlSetpointBoil = msg.substring(String("start_boil_control:").length()).toFloat();
         controlActiveBoil = true;
         ssr2On = false;
@@ -9573,6 +9803,54 @@ void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length
         controlActiveBoil = false;
         ssr2On = false;
         setActiveSSR(SSR_NONE);
+        String manualJson = buildManualJson();
+        webSocket.broadcastTXT(manualJson);
+      } else if (msg.startsWith("start_clean:")) {
+        // CLEAN (see runCleanControlLoop()). The page validates the range
+        // and shows the "element covered / flow balanced" confirmation
+        // first; the range is re-checked here so a bad value can never
+        // start heating. toFloat() returns 0 on garbage - out of range too.
+        float sp = msg.substring(String("start_clean:").length()).toFloat();
+        if (!(sp >= CLEAN_MIN_SETPOINT_C && sp <= CLEAN_MAX_SETPOINT_C)) {
+          String err = "{\"clean_error\":\"setpoint_out_of_range\"}";
+          webSocket.sendTXT(clientNum, err);
+          break;
+        }
+        // Only one heat loop at a time: CLEAN takes over SSR2, so RIMS and
+        // Boil are stopped first (their own state cleared, pins off).
+        controlActive = false;
+        ssr1On = false;
+        controlActiveBoil = false;
+        ssr2On = false;
+        setActiveSSR(SSR_NONE);
+        cleanSetpoint = sp;
+        cleanSsrOn = false;
+        cleanPeakSinceOff = NAN;
+        cleanTrackPeak = false;
+        cleanLastSwitchMs = millis();
+        cleanActive = true;
+        Serial.printf("[clean] started, target=%.1fC diff=%.1fC (SSR2 stays off until the next PT2 reading)\n",
+                      cleanSetpoint, cleanDiffC);
+        String manualJson = buildManualJson();
+        webSocket.broadcastTXT(manualJson);
+      } else if (msg == "stop_clean") {
+        stopClean("user_stop");
+        String manualJson = buildManualJson();
+        webSocket.broadcastTXT(manualJson);
+      } else if (msg.startsWith("set_clean_diff:")) {
+        // Settings screen. Saved to NVS so it survives a reboot; applies
+        // immediately, even to a CLEAN run already in progress.
+        float d = msg.substring(String("set_clean_diff:").length()).toFloat();
+        if (d >= CLEAN_DIFF_MIN_C && d <= CLEAN_DIFF_MAX_C) {
+          d = roundf(d * 10.0f) / 10.0f;
+          if (d != cleanDiffC) {
+            cleanDiffC = d;
+            prefs.putFloat("clean_diff", cleanDiffC);
+            Serial.printf("[clean] differential set to %.1fC (saved)\n", cleanDiffC);
+          }
+        }
+        // Always echo the current value back, so a rejected value visibly
+        // snaps back on the Settings screen instead of looking accepted.
         String manualJson = buildManualJson();
         webSocket.broadcastTXT(manualJson);
       }
@@ -9770,6 +10048,14 @@ void setup() {
   esp_task_wdt_add(NULL);
   Serial.println("[boot] watchdog armed, SSR forced off");
 
+  // CLEAN differential from NVS (see prefs). A missing or out-of-range
+  // value (first boot, or anything corrupted) falls back to the default.
+  prefs.begin("ysbrew", false);
+  float savedDiff = prefs.getFloat("clean_diff", CLEAN_DIFF_DEFAULT_C);
+  cleanDiffC = (savedDiff >= CLEAN_DIFF_MIN_C && savedDiff <= CLEAN_DIFF_MAX_C)
+               ? savedDiff : CLEAN_DIFF_DEFAULT_C;
+  Serial.printf("[boot] CLEAN differential = %.1fC\n", cleanDiffC);
+
   pinMode(CS_A, OUTPUT);
   pinMode(CS_B, OUTPUT);
   digitalWrite(CS_A, HIGH);
@@ -9931,6 +10217,7 @@ void loop() {
   // rather than waiting up to another second.
   runControlLoop(okA, tA);
   runBoilControlLoop(okB, tB);
+  runCleanControlLoop(okB, tB);
 
   if (millis() - lastManualPushMs >= MANUAL_PUSH_MS) {
     lastManualPushMs = millis();
@@ -9957,6 +10244,10 @@ void loop() {
   if (controlActive) {
     snprintf(l0, sizeof(l0), "%-9s SP:%4.1f", s0, controlSetpoint);
     snprintf(l1, sizeof(l1), "%-9s SSR:%s", s1, ssr1On ? "ON " : "OFF");
+  } else if (cleanActive) {
+    // CLEAN runs on PT2/SSR2 - "CL" marks the setpoint as CLEAN's.
+    snprintf(l0, sizeof(l0), "%-9s CL:%4.1f", s0, cleanSetpoint);
+    snprintf(l1, sizeof(l1), "%-9s SSR:%s", s1, cleanSsrOn ? "ON " : "OFF");
   } else {
     snprintf(l0, sizeof(l0), "%-12s%s", s0, "   ");
     snprintf(l1, sizeof(l1), "%-12s%s", s1, "   ");
@@ -10009,6 +10300,14 @@ void loop() {
   Serial.print(controlActiveBoil ? "ON" : "OFF");
   Serial.print(" SPBoil=");
   Serial.print(controlSetpointBoil);
+  Serial.print(" | CLEAN=");
+  Serial.print(cleanActive ? "ON" : "OFF");
+  Serial.print(" SPClean=");
+  Serial.print(cleanSetpoint);
+  Serial.print(" diff=");
+  Serial.print(cleanDiffC);
+  Serial.print(" SSR2clean=");
+  Serial.print(cleanSsrOn ? "ON" : "OFF");
   Serial.print(" | RELAY1=");
   Serial.print(relay1On ? "ON" : "OFF");
   Serial.print(" RELAY2=");

@@ -1055,8 +1055,19 @@
   </div>
 </div>
 
-<!-- ══ CLEAN ══ (see menu-manual-clean-spec.md) -->
+<!-- ══ CLEAN ══ Own loop on the controller since 2026-09-22 (see DECISIONS.md):
+     heats Vessel B with the Boil element (SSR2) from PT2, on/off with a
+     differential set in Settings. Pumps stay manual - this screen never
+     switches them. -->
 <div id="clean">
+  <div class="leave-confirm-backdrop" id="clean-start-confirm">
+    <div class="leave-confirm-box">
+      <div class="leave-confirm-title">Before heating</div>
+      <div class="leave-confirm-text">Make sure the Vessel B element is covered with water and the flow is balanced (the water level in Vessel B does not drop while recirculating).</div>
+      <button class="leave-confirm-btn primary" onclick="confirmCleanStart()">Confirmed - start heating</button>
+      <button class="leave-confirm-btn" onclick="cancelCleanStart()">Cancel</button>
+    </div>
+  </div>
   <div class="topbar">
     <div class="manual-topbar-left">
       <button class="back-btn" onclick="exitClean()">&lsaquo; Back</button>
@@ -1089,10 +1100,12 @@
     <div class="heat-control">
       <div class="setpoint-row">
         <div class="setpoint-label">Setpoint °C</div>
-        <input type="number" class="setpoint-input" id="clean-setpoint-input" step="0.5" placeholder="--">
+        <input type="number" class="setpoint-input" id="clean-setpoint-input" min="30" max="70" step="0.5" placeholder="30-70">
       </div>
-      <button class="control-btn" id="clean-control-btn" onclick="toggleControl('clean')">START</button>
-      <div class="control-status" id="clean-control-status">SSR: OFF</div>
+      <button class="control-btn" id="clean-control-btn" onclick="toggleClean()">START</button>
+      <div class="control-status" id="clean-control-status">SSR2: OFF</div>
+      <div class="import-status error" id="clean-msg"></div>
+      <div class="settings-note" id="clean-note">Heats Vessel B (Boil element, SSR2) using PT2. Differential: -- &deg;C (change in Settings). Pumps are manual only.</div>
     </div>
   </div>
 </div>
@@ -1487,6 +1500,18 @@
         <div class="import-status" id="settings-tol-status"></div>
       </div>
     </div>
+
+    <div class="recipe-section">
+      <div class="recipe-section-label">CLEAN Differential</div>
+      <div class="settings-row">
+        <div class="settings-note">CLEAN turns the Vessel B element ON when PT2 drops more than this many degrees below the target, and OFF when PT2 reaches the target. Saved on the controller itself (kept after a restart). Allowed 0.2-5.0.</div>
+        <div class="setpoint-row">
+          <div class="setpoint-label">Differential &deg;C</div>
+          <input type="number" class="setpoint-input" id="settings-clean-diff" min="0.2" max="5" step="0.1" onchange="onCleanDiffChange()">
+        </div>
+        <div class="import-status" id="settings-clean-diff-status"></div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1634,6 +1659,11 @@ const cleanPt2El = document.getElementById('clean-pt2');
 const cleanSetpointInput = document.getElementById('clean-setpoint-input');
 const cleanControlBtn = document.getElementById('clean-control-btn');
 const cleanControlStatus = document.getElementById('clean-control-status');
+const cleanMsgEl = document.getElementById('clean-msg');
+const cleanNoteEl = document.getElementById('clean-note');
+const cleanStartConfirmEl = document.getElementById('clean-start-confirm');
+const settingsCleanDiffEl = document.getElementById('settings-clean-diff');
+const settingsCleanDiffStatusEl = document.getElementById('settings-clean-diff-status');
 const importRecipeEl = document.getElementById('import-recipe');
 const importRecipeHeadingEl = document.getElementById('import-recipe-heading');
 const importPickerEl = document.getElementById('import-picker');
@@ -1861,6 +1891,8 @@ function connect() {
         handleBootCheck(msg);
       } else if (msg.manual) {
         handleManual(msg.manual);
+      } else if (msg.clean_error) {
+        cleanMsgEl.textContent = 'Controller rejected the target - it must be between 30 and 70 °C.';
       }
     } catch (e) {
       // Malformed frame - ignore, next push corrects it.
@@ -1887,12 +1919,11 @@ function retrySensorCheck() {
 // regardless of which screen is showing (same always-broadcast model as
 // the rest of this page) - handleManual() just updates the DOM, harmless
 // even while this screen isn't visible.
-// Manual and CLEAN are two views onto the exact same server-side state
-// (see menu-manual-clean-spec.md - "the only real difference right now is
-// which screen, not the behavior"), so a single "manual" broadcast
-// updates both screens' temps and heat-control UI every time, regardless
-// of which one is currently visible - same pattern as everything else on
-// this page.
+// A single "manual" broadcast updates both the Manual and CLEAN screens
+// every time, regardless of which one is visible - same pattern as
+// everything else on this page. Since 2026-09-22 they drive different
+// loops: Manual = RIMS (start_control), CLEAN = its own SSR2/PT2 loop
+// (start_clean, see updateCleanUI()).
 let heatControlActive = false;
 
 function handleManual(m) {
@@ -1909,7 +1940,7 @@ function handleManual(m) {
 
   heatControlActive = !!m.control_active;
   updateControlUI(manualSetpointInput, manualControlBtn, manualControlStatus, m);
-  updateControlUI(cleanSetpointInput, cleanControlBtn, cleanControlStatus, m);
+  updateCleanUI(m);
 
   // Same always-broadcast model as everything above - harmless to call
   // while the brew-cook screen isn't visible, matching Manual/CLEAN.
@@ -1942,6 +1973,87 @@ function toggleControl(prefix) {
   ws.send('start_control:' + value.toFixed(1));
 }
 
+// ── CLEAN ── own loop on the controller (start_clean/stop_clean): Vessel B,
+// Boil element (SSR2), PT2, on/off with the differential from Settings.
+// Pumps are never switched from here.
+const CLEAN_MIN_C = 30, CLEAN_MAX_C = 70;
+let cleanActive = false;
+let cleanDiffC = null; // last value the controller reported
+
+function updateCleanUI(m) {
+  cleanActive = !!m.clean_active;
+  cleanControlBtn.textContent = cleanActive ? 'STOP' : 'START';
+  cleanControlBtn.classList.toggle('active', cleanActive);
+  cleanControlStatus.textContent = 'SSR2: ' + (m.clean_ssr ? 'ON' : 'OFF');
+  cleanControlStatus.classList.toggle('on', !!m.clean_ssr);
+  if (cleanActive && m.clean_setpoint !== null && document.activeElement !== cleanSetpointInput) {
+    cleanSetpointInput.value = m.clean_setpoint;
+  }
+  if (typeof m.clean_diff === 'number') {
+    cleanDiffC = m.clean_diff;
+    cleanNoteEl.textContent = 'Heats Vessel B (Boil element, SSR2) using PT2. Differential: '
+      + cleanDiffC.toFixed(1) + ' °C (change in Settings). Pumps are manual only.';
+    if (document.activeElement !== settingsCleanDiffEl) settingsCleanDiffEl.value = cleanDiffC.toFixed(1);
+  }
+}
+
+// Returns the target, or null (with the reason shown on screen) when it
+// is empty or outside 30-70 - heating never starts on a bad value.
+function readCleanTarget() {
+  const raw = cleanSetpointInput.value.trim();
+  const v = parseFloat(raw);
+  if (raw === '' || !isFinite(v) || v < CLEAN_MIN_C || v > CLEAN_MAX_C) {
+    cleanMsgEl.textContent = 'Enter a target between ' + CLEAN_MIN_C + ' and ' + CLEAN_MAX_C + ' °C.';
+    return null;
+  }
+  return v;
+}
+
+function toggleClean() {
+  cleanMsgEl.textContent = '';
+  if (!(ws && ws.readyState === WebSocket.OPEN)) {
+    cleanMsgEl.textContent = 'Not connected to the controller.';
+    return;
+  }
+  if (cleanActive) {
+    ws.send('stop_clean');
+    return;
+  }
+  if (readCleanTarget() === null) return;
+  cleanStartConfirmEl.classList.add('visible');
+}
+
+function confirmCleanStart() {
+  cleanStartConfirmEl.classList.remove('visible');
+  const v = readCleanTarget();
+  if (v === null) return;
+  if (!(ws && ws.readyState === WebSocket.OPEN)) {
+    cleanMsgEl.textContent = 'Not connected to the controller.';
+    return;
+  }
+  ws.send('start_clean:' + v.toFixed(1));
+}
+
+function cancelCleanStart() {
+  cleanStartConfirmEl.classList.remove('visible');
+}
+
+function onCleanDiffChange() {
+  let v = parseFloat(settingsCleanDiffEl.value);
+  if (!isFinite(v) || v < 0.2 || v > 5) {
+    settingsCleanDiffStatusEl.textContent = 'Must be between 0.2 and 5.0 °C - not saved.';
+    if (cleanDiffC !== null) settingsCleanDiffEl.value = cleanDiffC.toFixed(1);
+    return;
+  }
+  v = Math.round(v * 10) / 10;
+  if (!(ws && ws.readyState === WebSocket.OPEN)) {
+    settingsCleanDiffStatusEl.textContent = 'Not connected to the controller - not saved.';
+    return;
+  }
+  ws.send('set_clean_diff:' + v.toFixed(1));
+  settingsCleanDiffStatusEl.textContent = 'Sent: ' + v.toFixed(1) + ' °C (saved on the controller).';
+}
+
 function togglePump(n) {
   if (brewActive) logEvent('pump_toggle_requested', 'pump' + n);
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1962,9 +2074,16 @@ function exitManual() {
 function enterClean() {
   menuEl.classList.remove('visible');
   cleanEl.classList.add('visible');
+  cleanMsgEl.textContent = '';
 }
 
+// Leaving CLEAN always stops its heating (SSR2) - same reason as
+// exitBrewCook(): the socket stays open on another screen, so the
+// controller's "no clients" cut-off would never fire. Pumps are left as
+// they are (manual only).
 function exitClean() {
+  cleanStartConfirmEl.classList.remove('visible');
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send('stop_clean');
   cleanEl.classList.remove('visible');
   menuEl.classList.add('visible');
 }
@@ -3181,6 +3300,8 @@ function enterSettings() {
   settingsBeepStatusEl.textContent = '';
   settingsTargetTolEl.value = settings.targetTolC.toFixed(1);
   settingsTolStatusEl.textContent = '';
+  settingsCleanDiffStatusEl.textContent = '';
+  if (cleanDiffC !== null) settingsCleanDiffEl.value = cleanDiffC.toFixed(1);
 }
 
 function exitSettings() {
