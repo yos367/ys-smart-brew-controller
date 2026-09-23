@@ -253,6 +253,24 @@ bool cleanTrackPeak = false; // true from an OFF until the next ON/stop
 bool cleanSensorFault = false;  // PT2 not fresh/valid on the latest cycle
 uint32_t cleanSensorCuts = 0;   // sensor cut-offs since the last START
 
+// CLEAN countdown (2026-09-23). Runs here on the controller - the page only
+// displays it. Starts the first time PT2 reaches the target; when it runs
+// out, CLEAN stops (SSR2 off) and cleanDone tells the page to say so.
+// Pumps are not touched at the end either.
+#define CLEAN_MIN_MINUTES 1
+#define CLEAN_MAX_MINUTES 240
+uint32_t cleanDurationMin = 0;
+bool cleanTimerStarted = false;
+unsigned long cleanTimerStartMs = 0;
+bool cleanDone = false;
+
+uint32_t cleanRemainingSec() {
+  if (!cleanTimerStarted) return cleanDurationMin * 60UL;
+  unsigned long elapsed = (millis() - cleanTimerStartMs) / 1000UL;
+  unsigned long total = cleanDurationMin * 60UL;
+  return elapsed >= total ? 0 : total - elapsed;
+}
+
 // Non-volatile storage (ESP32 NVS) for controller-side settings that must
 // survive a reboot and don't belong to any one browser. Only the CLEAN
 // differential lives here today.
@@ -553,7 +571,11 @@ String buildManualJson() {
   json += "\"clean_ssr\":" + String(cleanSsrOn ? "true" : "false") + ",";
   json += "\"clean_diff\":" + String(cleanDiffC, 1) + ",";
   json += "\"clean_sensor_fault\":" + String(cleanSensorFault ? "true" : "false") + ",";
-  json += "\"clean_sensor_cuts\":" + String(cleanSensorCuts);
+  json += "\"clean_sensor_cuts\":" + String(cleanSensorCuts) + ",";
+  json += "\"clean_minutes\":" + String(cleanDurationMin) + ",";
+  json += "\"clean_timer_started\":" + String(cleanTimerStarted ? "true" : "false") + ",";
+  json += "\"clean_remaining_s\":" + String(cleanRemainingSec()) + ",";
+  json += "\"clean_done\":" + String(cleanDone ? "true" : "false");
   json += "}}";
   return json;
 }
@@ -682,6 +704,16 @@ void runCleanControlLoop(bool tempFreshB, float tempValueB) {
     return;
   }
 
+  // Countdown end is checked before the sensor, so it ends on time even
+  // while PT2 is faulted - the clock is wall time, not "time at target".
+  if (cleanTimerStarted && cleanRemainingSec() == 0) {
+    Serial.printf("[clean] timer finished after %u min - stopping CLEAN (pumps left as they are)\n",
+                  cleanDurationMin);
+    stopClean("timer_done");
+    cleanDone = true;
+    return;
+  }
+
   if (!tempFreshB || isnan(tempValueB)) {
     if (!cleanSensorFault) {
       cleanSensorFault = true;
@@ -694,6 +726,13 @@ void runCleanControlLoop(bool tempFreshB, float tempValueB) {
   if (cleanSensorFault) {
     cleanSensorFault = false;
     Serial.println("[clean] PT2 reading OK again - band control resumes");
+  }
+
+  if (!cleanTimerStarted && tempValueB >= cleanSetpoint) {
+    cleanTimerStarted = true;
+    cleanTimerStartMs = millis();
+    Serial.printf("[clean] target reached (PT2=%.1fC) - %u min countdown started at t=%.1fs\n",
+                  tempValueB, cleanDurationMin, cleanTimerStartMs / 1000.0f);
   }
 
   if (cleanTrackPeak && (isnan(cleanPeakSinceOff) || tempValueB > cleanPeakSinceOff)) {
@@ -1822,11 +1861,32 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
         <div class="setpoint-label">Setpoint °C</div>
         <input type="number" class="setpoint-input" id="clean-setpoint-input" min="30" max="70" step="0.5" placeholder="30-70">
       </div>
+      <div class="setpoint-row">
+        <div class="setpoint-label">Time (min)</div>
+        <input type="number" class="setpoint-input" id="clean-minutes-input" min="1" max="240" step="1" placeholder="1-240">
+      </div>
       <button class="control-btn" id="clean-control-btn" onclick="toggleClean()">START</button>
       <div class="control-status" id="clean-control-status">SSR2: OFF</div>
+      <!-- Countdown runs on the controller; this only shows what it reports. -->
+      <div class="timer-display" id="clean-timer-display" style="text-align:center">--:--</div>
+      <div class="control-status" id="clean-timer-status"></div>
       <div class="import-status error" id="clean-msg"></div>
       <div class="import-status error" id="clean-fault"></div>
       <div class="settings-note" id="clean-note">Heats Vessel B (Boil element, SSR2) using PT2. Differential: -- &deg;C (change in Settings). Pumps are manual only.</div>
+    </div>
+
+    <!-- Same pump commands as Manual (toggle1/toggle2) - independent of
+         heating, the countdown and START/STOP. State shown is what the
+         controller reports (relay1/relay2). -->
+    <div class="pump-row">
+      <div class="pump-btn" id="clean-pump1-btn" onclick="togglePump(1)">
+        <div class="pump-btn-label">Pump 1</div>
+        <div class="pump-btn-state" id="clean-pump1-state">OFF</div>
+      </div>
+      <div class="pump-btn" id="clean-pump2-btn" onclick="togglePump(2)">
+        <div class="pump-btn-label">Pump 2</div>
+        <div class="pump-btn-state" id="clean-pump2-state">OFF</div>
+      </div>
     </div>
   </div>
 </div>
@@ -2382,6 +2442,13 @@ const cleanControlBtn = document.getElementById('clean-control-btn');
 const cleanControlStatus = document.getElementById('clean-control-status');
 const cleanMsgEl = document.getElementById('clean-msg');
 const cleanFaultEl = document.getElementById('clean-fault');
+const cleanMinutesInput = document.getElementById('clean-minutes-input');
+const cleanTimerDisplayEl = document.getElementById('clean-timer-display');
+const cleanTimerStatusEl = document.getElementById('clean-timer-status');
+const cleanPump1Btn = document.getElementById('clean-pump1-btn');
+const cleanPump1State = document.getElementById('clean-pump1-state');
+const cleanPump2Btn = document.getElementById('clean-pump2-btn');
+const cleanPump2State = document.getElementById('clean-pump2-state');
 const cleanNoteEl = document.getElementById('clean-note');
 const cleanStartConfirmEl = document.getElementById('clean-start-confirm');
 const settingsCleanDiffEl = document.getElementById('settings-clean-diff');
@@ -2614,7 +2681,9 @@ function connect() {
       } else if (msg.manual) {
         handleManual(msg.manual);
       } else if (msg.clean_error) {
-        cleanMsgEl.textContent = 'Controller rejected the target - it must be between 30 and 70 °C.';
+        cleanMsgEl.textContent = msg.clean_error === 'minutes_out_of_range'
+          ? 'Controller rejected the time - it must be 1 to 240 minutes.'
+          : 'Controller rejected the target - it must be between 30 and 70 °C.';
       }
     } catch (e) {
       // Malformed frame - ignore, next push corrects it.
@@ -2659,6 +2728,10 @@ function handleManual(m) {
   pump1State.textContent = m.relay1 ? 'ON' : 'OFF';
   pump2Btn.classList.toggle('on', !!m.relay2);
   pump2State.textContent = m.relay2 ? 'ON' : 'OFF';
+  cleanPump1Btn.classList.toggle('on', !!m.relay1);
+  cleanPump1State.textContent = m.relay1 ? 'ON' : 'OFF';
+  cleanPump2Btn.classList.toggle('on', !!m.relay2);
+  cleanPump2State.textContent = m.relay2 ? 'ON' : 'OFF';
 
   heatControlActive = !!m.control_active;
   updateControlUI(manualSetpointInput, manualControlBtn, manualControlStatus, m);
@@ -2699,6 +2772,7 @@ function toggleControl(prefix) {
 // Boil element (SSR2), PT2, on/off with the differential from Settings.
 // Pumps are never switched from here.
 const CLEAN_MIN_C = 30, CLEAN_MAX_C = 70;
+const CLEAN_MIN_MINUTES = 1, CLEAN_MAX_MINUTES = 240;
 let cleanActive = false;
 let cleanDiffC = null; // last value the controller reported
 
@@ -2724,12 +2798,50 @@ function updateCleanUI(m) {
   if (cleanActive && m.clean_setpoint !== null && document.activeElement !== cleanSetpointInput) {
     cleanSetpointInput.value = m.clean_setpoint;
   }
+  if (cleanActive && m.clean_minutes && document.activeElement !== cleanMinutesInput) {
+    cleanMinutesInput.value = m.clean_minutes;
+  }
+  // Countdown: the controller owns it, this only shows what it reports.
+  if (m.clean_done) {
+    cleanTimerDisplayEl.textContent = '00:00';
+    cleanTimerStatusEl.textContent = 'CLEAN finished - heating is OFF. Pumps were left as they are.';
+    cleanTimerStatusEl.classList.add('on');
+  } else if (cleanActive && !m.clean_timer_started) {
+    cleanTimerDisplayEl.textContent = fmtMmSs(m.clean_remaining_s);
+    cleanTimerStatusEl.textContent = 'Heating... countdown starts when PT2 reaches the target.';
+    cleanTimerStatusEl.classList.remove('on');
+  } else if (cleanActive) {
+    cleanTimerDisplayEl.textContent = fmtMmSs(m.clean_remaining_s);
+    cleanTimerStatusEl.textContent = 'Cleaning - time left';
+    cleanTimerStatusEl.classList.remove('on');
+  } else {
+    cleanTimerDisplayEl.textContent = '--:--';
+    cleanTimerStatusEl.textContent = '';
+    cleanTimerStatusEl.classList.remove('on');
+  }
   if (typeof m.clean_diff === 'number') {
     cleanDiffC = m.clean_diff;
     cleanNoteEl.textContent = 'Heats Vessel B (Boil element, SSR2) using PT2. Differential: '
       + cleanDiffC.toFixed(1) + ' °C (change in Settings). Pumps are manual only.';
     if (document.activeElement !== settingsCleanDiffEl) settingsCleanDiffEl.value = cleanDiffC.toFixed(1);
   }
+}
+
+function fmtMmSs(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const mm = Math.floor(sec / 60), ss = sec % 60;
+  return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+}
+
+// Whole minutes 1-240 (required), or null with the reason shown on screen.
+function readCleanMinutes() {
+  const raw = cleanMinutesInput.value.trim();
+  const v = Number(raw);
+  if (raw === '' || !Number.isInteger(v) || v < CLEAN_MIN_MINUTES || v > CLEAN_MAX_MINUTES) {
+    cleanMsgEl.textContent = 'Enter a time of ' + CLEAN_MIN_MINUTES + ' to ' + CLEAN_MAX_MINUTES + ' whole minutes.';
+    return null;
+  }
+  return v;
 }
 
 // Returns the target, or null (with the reason shown on screen) when it
@@ -2754,7 +2866,7 @@ function toggleClean() {
     ws.send('stop_clean');
     return;
   }
-  if (readCleanTarget() === null) return;
+  if (readCleanTarget() === null || readCleanMinutes() === null) return;
   cleanStartConfirmEl.classList.add('visible');
 }
 
@@ -2762,11 +2874,13 @@ function confirmCleanStart() {
   cleanStartConfirmEl.classList.remove('visible');
   const v = readCleanTarget();
   if (v === null) return;
+  const minutes = readCleanMinutes();
+  if (minutes === null) return;
   if (!(ws && ws.readyState === WebSocket.OPEN)) {
     cleanMsgEl.textContent = 'Not connected to the controller.';
     return;
   }
-  ws.send('start_clean:' + v.toFixed(1));
+  ws.send('start_clean:' + v.toFixed(1) + ':' + minutes);
 }
 
 function cancelCleanStart() {
@@ -9843,10 +9957,20 @@ void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length
         // CLEAN (see runCleanControlLoop()). The page validates the range
         // and shows the "element covered / flow balanced" confirmation
         // first; the range is re-checked here so a bad value can never
-        // start heating. toFloat() returns 0 on garbage - out of range too.
-        float sp = msg.substring(String("start_clean:").length()).toFloat();
+        // start heating. toFloat()/toInt() return 0 on garbage - out of
+        // range too. Format: "start_clean:<target C>:<minutes>" - the
+        // minutes are required, a missing ":" means minutes = 0 = rejected.
+        String args = msg.substring(String("start_clean:").length());
+        int sep = args.indexOf(':');
+        float sp = (sep < 0 ? args : args.substring(0, sep)).toFloat();
+        long minutes = sep < 0 ? 0 : args.substring(sep + 1).toInt();
         if (!(sp >= CLEAN_MIN_SETPOINT_C && sp <= CLEAN_MAX_SETPOINT_C)) {
           String err = "{\"clean_error\":\"setpoint_out_of_range\"}";
+          webSocket.sendTXT(clientNum, err);
+          break;
+        }
+        if (minutes < CLEAN_MIN_MINUTES || minutes > CLEAN_MAX_MINUTES) {
+          String err = "{\"clean_error\":\"minutes_out_of_range\"}";
           webSocket.sendTXT(clientNum, err);
           break;
         }
@@ -9863,14 +9987,18 @@ void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length
         cleanTrackPeak = false;
         cleanSensorFault = false;
         cleanSensorCuts = 0;
+        cleanDurationMin = (uint32_t)minutes;
+        cleanTimerStarted = false;
+        cleanDone = false;
         cleanLastSwitchMs = millis();
         cleanActive = true;
-        Serial.printf("[clean] started, target=%.1fC diff=%.1fC (SSR2 stays off until the next PT2 reading)\n",
-                      cleanSetpoint, cleanDiffC);
+        Serial.printf("[clean] started, target=%.1fC diff=%.1fC time=%u min (countdown starts at target; SSR2 stays off until the next PT2 reading)\n",
+                      cleanSetpoint, cleanDiffC, cleanDurationMin);
         String manualJson = buildManualJson();
         webSocket.broadcastTXT(manualJson);
       } else if (msg == "stop_clean") {
         stopClean("user_stop");
+        cleanDone = false; // leaving/stopping clears the "finished" notice
         String manualJson = buildManualJson();
         webSocket.broadcastTXT(manualJson);
       } else if (msg.startsWith("set_clean_diff:")) {
@@ -10344,6 +10472,11 @@ void loop() {
   Serial.print(cleanDiffC);
   Serial.print(" SSR2clean=");
   Serial.print(cleanSsrOn ? "ON" : "OFF");
+  Serial.print(" timer=");
+  Serial.print(cleanTimerStarted ? "RUN" : "WAIT");
+  Serial.print(" left=");
+  Serial.print(cleanRemainingSec());
+  Serial.print("s");
   Serial.print(" | RELAY1=");
   Serial.print(relay1On ? "ON" : "OFF");
   Serial.print(" RELAY2=");

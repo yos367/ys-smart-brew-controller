@@ -1102,11 +1102,32 @@
         <div class="setpoint-label">Setpoint °C</div>
         <input type="number" class="setpoint-input" id="clean-setpoint-input" min="30" max="70" step="0.5" placeholder="30-70">
       </div>
+      <div class="setpoint-row">
+        <div class="setpoint-label">Time (min)</div>
+        <input type="number" class="setpoint-input" id="clean-minutes-input" min="1" max="240" step="1" placeholder="1-240">
+      </div>
       <button class="control-btn" id="clean-control-btn" onclick="toggleClean()">START</button>
       <div class="control-status" id="clean-control-status">SSR2: OFF</div>
+      <!-- Countdown runs on the controller; this only shows what it reports. -->
+      <div class="timer-display" id="clean-timer-display" style="text-align:center">--:--</div>
+      <div class="control-status" id="clean-timer-status"></div>
       <div class="import-status error" id="clean-msg"></div>
       <div class="import-status error" id="clean-fault"></div>
       <div class="settings-note" id="clean-note">Heats Vessel B (Boil element, SSR2) using PT2. Differential: -- &deg;C (change in Settings). Pumps are manual only.</div>
+    </div>
+
+    <!-- Same pump commands as Manual (toggle1/toggle2) - independent of
+         heating, the countdown and START/STOP. State shown is what the
+         controller reports (relay1/relay2). -->
+    <div class="pump-row">
+      <div class="pump-btn" id="clean-pump1-btn" onclick="togglePump(1)">
+        <div class="pump-btn-label">Pump 1</div>
+        <div class="pump-btn-state" id="clean-pump1-state">OFF</div>
+      </div>
+      <div class="pump-btn" id="clean-pump2-btn" onclick="togglePump(2)">
+        <div class="pump-btn-label">Pump 2</div>
+        <div class="pump-btn-state" id="clean-pump2-state">OFF</div>
+      </div>
     </div>
   </div>
 </div>
@@ -1662,6 +1683,13 @@ const cleanControlBtn = document.getElementById('clean-control-btn');
 const cleanControlStatus = document.getElementById('clean-control-status');
 const cleanMsgEl = document.getElementById('clean-msg');
 const cleanFaultEl = document.getElementById('clean-fault');
+const cleanMinutesInput = document.getElementById('clean-minutes-input');
+const cleanTimerDisplayEl = document.getElementById('clean-timer-display');
+const cleanTimerStatusEl = document.getElementById('clean-timer-status');
+const cleanPump1Btn = document.getElementById('clean-pump1-btn');
+const cleanPump1State = document.getElementById('clean-pump1-state');
+const cleanPump2Btn = document.getElementById('clean-pump2-btn');
+const cleanPump2State = document.getElementById('clean-pump2-state');
 const cleanNoteEl = document.getElementById('clean-note');
 const cleanStartConfirmEl = document.getElementById('clean-start-confirm');
 const settingsCleanDiffEl = document.getElementById('settings-clean-diff');
@@ -1894,7 +1922,9 @@ function connect() {
       } else if (msg.manual) {
         handleManual(msg.manual);
       } else if (msg.clean_error) {
-        cleanMsgEl.textContent = 'Controller rejected the target - it must be between 30 and 70 °C.';
+        cleanMsgEl.textContent = msg.clean_error === 'minutes_out_of_range'
+          ? 'Controller rejected the time - it must be 1 to 240 minutes.'
+          : 'Controller rejected the target - it must be between 30 and 70 °C.';
       }
     } catch (e) {
       // Malformed frame - ignore, next push corrects it.
@@ -1939,6 +1969,10 @@ function handleManual(m) {
   pump1State.textContent = m.relay1 ? 'ON' : 'OFF';
   pump2Btn.classList.toggle('on', !!m.relay2);
   pump2State.textContent = m.relay2 ? 'ON' : 'OFF';
+  cleanPump1Btn.classList.toggle('on', !!m.relay1);
+  cleanPump1State.textContent = m.relay1 ? 'ON' : 'OFF';
+  cleanPump2Btn.classList.toggle('on', !!m.relay2);
+  cleanPump2State.textContent = m.relay2 ? 'ON' : 'OFF';
 
   heatControlActive = !!m.control_active;
   updateControlUI(manualSetpointInput, manualControlBtn, manualControlStatus, m);
@@ -1979,6 +2013,7 @@ function toggleControl(prefix) {
 // Boil element (SSR2), PT2, on/off with the differential from Settings.
 // Pumps are never switched from here.
 const CLEAN_MIN_C = 30, CLEAN_MAX_C = 70;
+const CLEAN_MIN_MINUTES = 1, CLEAN_MAX_MINUTES = 240;
 let cleanActive = false;
 let cleanDiffC = null; // last value the controller reported
 
@@ -2004,12 +2039,50 @@ function updateCleanUI(m) {
   if (cleanActive && m.clean_setpoint !== null && document.activeElement !== cleanSetpointInput) {
     cleanSetpointInput.value = m.clean_setpoint;
   }
+  if (cleanActive && m.clean_minutes && document.activeElement !== cleanMinutesInput) {
+    cleanMinutesInput.value = m.clean_minutes;
+  }
+  // Countdown: the controller owns it, this only shows what it reports.
+  if (m.clean_done) {
+    cleanTimerDisplayEl.textContent = '00:00';
+    cleanTimerStatusEl.textContent = 'CLEAN finished - heating is OFF. Pumps were left as they are.';
+    cleanTimerStatusEl.classList.add('on');
+  } else if (cleanActive && !m.clean_timer_started) {
+    cleanTimerDisplayEl.textContent = fmtMmSs(m.clean_remaining_s);
+    cleanTimerStatusEl.textContent = 'Heating... countdown starts when PT2 reaches the target.';
+    cleanTimerStatusEl.classList.remove('on');
+  } else if (cleanActive) {
+    cleanTimerDisplayEl.textContent = fmtMmSs(m.clean_remaining_s);
+    cleanTimerStatusEl.textContent = 'Cleaning - time left';
+    cleanTimerStatusEl.classList.remove('on');
+  } else {
+    cleanTimerDisplayEl.textContent = '--:--';
+    cleanTimerStatusEl.textContent = '';
+    cleanTimerStatusEl.classList.remove('on');
+  }
   if (typeof m.clean_diff === 'number') {
     cleanDiffC = m.clean_diff;
     cleanNoteEl.textContent = 'Heats Vessel B (Boil element, SSR2) using PT2. Differential: '
       + cleanDiffC.toFixed(1) + ' °C (change in Settings). Pumps are manual only.';
     if (document.activeElement !== settingsCleanDiffEl) settingsCleanDiffEl.value = cleanDiffC.toFixed(1);
   }
+}
+
+function fmtMmSs(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  const mm = Math.floor(sec / 60), ss = sec % 60;
+  return String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+}
+
+// Whole minutes 1-240 (required), or null with the reason shown on screen.
+function readCleanMinutes() {
+  const raw = cleanMinutesInput.value.trim();
+  const v = Number(raw);
+  if (raw === '' || !Number.isInteger(v) || v < CLEAN_MIN_MINUTES || v > CLEAN_MAX_MINUTES) {
+    cleanMsgEl.textContent = 'Enter a time of ' + CLEAN_MIN_MINUTES + ' to ' + CLEAN_MAX_MINUTES + ' whole minutes.';
+    return null;
+  }
+  return v;
 }
 
 // Returns the target, or null (with the reason shown on screen) when it
@@ -2034,7 +2107,7 @@ function toggleClean() {
     ws.send('stop_clean');
     return;
   }
-  if (readCleanTarget() === null) return;
+  if (readCleanTarget() === null || readCleanMinutes() === null) return;
   cleanStartConfirmEl.classList.add('visible');
 }
 
@@ -2042,11 +2115,13 @@ function confirmCleanStart() {
   cleanStartConfirmEl.classList.remove('visible');
   const v = readCleanTarget();
   if (v === null) return;
+  const minutes = readCleanMinutes();
+  if (minutes === null) return;
   if (!(ws && ws.readyState === WebSocket.OPEN)) {
     cleanMsgEl.textContent = 'Not connected to the controller.';
     return;
   }
-  ws.send('start_clean:' + v.toFixed(1));
+  ws.send('start_clean:' + v.toFixed(1) + ':' + minutes);
 }
 
 function cancelCleanStart() {
