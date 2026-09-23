@@ -1080,6 +1080,8 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
     flex-direction:column; align-items:center;
   }
   #manual.visible, #clean.visible { display:flex; animation:menuIn 0.4s ease; }
+  /* CLEAN has more rows than fits a small phone - scroll, never clip. */
+  #clean { overflow-y:auto; padding-bottom:24px; }
 
   .manual-topbar-left { display:flex; align-items:center; gap:10px; }
   .back-btn {
@@ -1856,6 +1858,22 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       </div>
     </div>
 
+    <!-- Same pump commands as Manual (toggle1/toggle2) - independent of
+         heating, the countdown and START/STOP. State shown is what the
+         controller reports (relay1/relay2). Placed right under the temps:
+         at the bottom of the screen they fell below the fold (this
+         screen is position:fixed) and could not be seen on a phone. -->
+    <div class="pump-row">
+      <div class="pump-btn" id="clean-pump1-btn" onclick="togglePump(1)">
+        <div class="pump-btn-label">Pump 1</div>
+        <div class="pump-btn-state" id="clean-pump1-state">OFF</div>
+      </div>
+      <div class="pump-btn" id="clean-pump2-btn" onclick="togglePump(2)">
+        <div class="pump-btn-label">Pump 2</div>
+        <div class="pump-btn-state" id="clean-pump2-state">OFF</div>
+      </div>
+    </div>
+
     <div class="heat-control">
       <div class="setpoint-row">
         <div class="setpoint-label">Setpoint °C</div>
@@ -1873,20 +1891,6 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       <div class="import-status error" id="clean-msg"></div>
       <div class="import-status error" id="clean-fault"></div>
       <div class="settings-note" id="clean-note">Heats Vessel B (Boil element, SSR2) using PT2. Differential: -- &deg;C (change in Settings). Pumps are manual only.</div>
-    </div>
-
-    <!-- Same pump commands as Manual (toggle1/toggle2) - independent of
-         heating, the countdown and START/STOP. State shown is what the
-         controller reports (relay1/relay2). -->
-    <div class="pump-row">
-      <div class="pump-btn" id="clean-pump1-btn" onclick="togglePump(1)">
-        <div class="pump-btn-label">Pump 1</div>
-        <div class="pump-btn-state" id="clean-pump1-state">OFF</div>
-      </div>
-      <div class="pump-btn" id="clean-pump2-btn" onclick="togglePump(2)">
-        <div class="pump-btn-label">Pump 2</div>
-        <div class="pump-btn-state" id="clean-pump2-state">OFF</div>
-      </div>
     </div>
   </div>
 </div>
@@ -10405,13 +10409,16 @@ void loop() {
   // marker slot (no longer meaningful - see the SSR cleanup note above)
   // for the setpoint and live SSR state, so the loop is visible on the
   // bench without needing a phone connected. Otherwise unchanged.
+  // SSR state is ONE character (1 = ON, 0 = OFF): "PT2: 24.9C" is already
+  // 10 chars, so "PT2: 24.9C SSR:" leaves exactly 1 of the 16 columns -
+  // "ON"/"OFF" were cut to a bare "O" that looked the same both ways.
   if (controlActive) {
     snprintf(l0, sizeof(l0), "%-9s SP:%4.1f", s0, controlSetpoint);
-    snprintf(l1, sizeof(l1), "%-9s SSR:%s", s1, ssr1On ? "ON " : "OFF");
+    snprintf(l1, sizeof(l1), "%-9s SSR:%c", s1, ssr1On ? '1' : '0');
   } else if (cleanActive) {
     // CLEAN runs on PT2/SSR2 - "CL" marks the setpoint as CLEAN's.
     snprintf(l0, sizeof(l0), "%-9s CL:%4.1f", s0, cleanSetpoint);
-    snprintf(l1, sizeof(l1), "%-9s SSR:%s", s1, cleanSsrOn ? "ON " : "OFF");
+    snprintf(l1, sizeof(l1), "%-9s SSR:%c", s1, cleanSsrOn ? '1' : '0');
   } else {
     snprintf(l0, sizeof(l0), "%-12s%s", s0, "   ");
     snprintf(l1, sizeof(l1), "%-12s%s", s1, "   ");
