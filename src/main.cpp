@@ -250,6 +250,8 @@ unsigned long cleanLastSwitchMs = 0;
 // heat carried the water after it was cut.
 float cleanPeakSinceOff = NAN;
 bool cleanTrackPeak = false; // true from an OFF until the next ON/stop
+bool cleanSensorFault = false;  // PT2 not fresh/valid on the latest cycle
+uint32_t cleanSensorCuts = 0;   // sensor cut-offs since the last START
 
 // Non-volatile storage (ESP32 NVS) for controller-side settings that must
 // survive a reboot and don't belong to any one browser. Only the CLEAN
@@ -549,7 +551,9 @@ String buildManualJson() {
   json += "\"clean_active\":" + String(cleanActive ? "true" : "false") + ",";
   json += "\"clean_setpoint\":" + (isnan(cleanSetpoint) ? String("null") : String(cleanSetpoint, 1)) + ",";
   json += "\"clean_ssr\":" + String(cleanSsrOn ? "true" : "false") + ",";
-  json += "\"clean_diff\":" + String(cleanDiffC, 1);
+  json += "\"clean_diff\":" + String(cleanDiffC, 1) + ",";
+  json += "\"clean_sensor_fault\":" + String(cleanSensorFault ? "true" : "false") + ",";
+  json += "\"clean_sensor_cuts\":" + String(cleanSensorCuts);
   json += "}}";
   return json;
 }
@@ -655,6 +659,7 @@ void stopClean(const char *reason) {
   }
   cleanPeakSinceOff = NAN;
   cleanTrackPeak = false;
+  cleanSensorFault = false;
 }
 
 // On/off with a differential (hysteresis) band, over PT100 B -> SSR2:
@@ -664,6 +669,11 @@ void stopClean(const char *reason) {
 // Stricter than the RIMS/Boil loops on purpose: any cycle without a FRESH
 // PT2 reading cuts SSR2 at once (no STALE_MS grace) - CLEAN precision
 // doesn't matter, so there is nothing to gain by heating on an old number.
+// CLEAN itself keeps running through a bad read: the next good PT2 reading
+// is judged by the same band rules above (so heating resumes by itself only
+// once PT2 is below target - diff). cleanSensorFault/cleanSensorCuts are
+// sent to the page so the cut is always shown on screen - the counter
+// catches a sub-second glitch that falls between two 1s broadcasts.
 void runCleanControlLoop(bool tempFreshB, float tempValueB) {
   if (!cleanActive) return;
 
@@ -673,8 +683,17 @@ void runCleanControlLoop(bool tempFreshB, float tempValueB) {
   }
 
   if (!tempFreshB || isnan(tempValueB)) {
+    if (!cleanSensorFault) {
+      cleanSensorFault = true;
+      cleanSensorCuts++;
+      Serial.printf("[clean] PT2 reading invalid - heating cut (cut #%u since START)\n", cleanSensorCuts);
+    }
     cleanSetSsr(false, NAN, "sensor");
     return;
+  }
+  if (cleanSensorFault) {
+    cleanSensorFault = false;
+    Serial.println("[clean] PT2 reading OK again - band control resumes");
   }
 
   if (cleanTrackPeak && (isnan(cleanPeakSinceOff) || tempValueB > cleanPeakSinceOff)) {
@@ -1806,6 +1825,7 @@ const char PAGE_HTML[] PROGMEM = R"HTML(
       <button class="control-btn" id="clean-control-btn" onclick="toggleClean()">START</button>
       <div class="control-status" id="clean-control-status">SSR2: OFF</div>
       <div class="import-status error" id="clean-msg"></div>
+      <div class="import-status error" id="clean-fault"></div>
       <div class="settings-note" id="clean-note">Heats Vessel B (Boil element, SSR2) using PT2. Differential: -- &deg;C (change in Settings). Pumps are manual only.</div>
     </div>
   </div>
@@ -2361,6 +2381,7 @@ const cleanSetpointInput = document.getElementById('clean-setpoint-input');
 const cleanControlBtn = document.getElementById('clean-control-btn');
 const cleanControlStatus = document.getElementById('clean-control-status');
 const cleanMsgEl = document.getElementById('clean-msg');
+const cleanFaultEl = document.getElementById('clean-fault');
 const cleanNoteEl = document.getElementById('clean-note');
 const cleanStartConfirmEl = document.getElementById('clean-start-confirm');
 const settingsCleanDiffEl = document.getElementById('settings-clean-diff');
@@ -2687,6 +2708,19 @@ function updateCleanUI(m) {
   cleanControlBtn.classList.toggle('active', cleanActive);
   cleanControlStatus.textContent = 'SSR2: ' + (m.clean_ssr ? 'ON' : 'OFF');
   cleanControlStatus.classList.toggle('on', !!m.clean_ssr);
+  // A bad PT2 read cuts SSR2 at once on the controller; CLEAN keeps running
+  // and heating resumes by itself once PT2 reads OK and is below the band.
+  // The cut counter keeps this visible even when a sub-second glitch falls
+  // between two broadcasts.
+  const cuts = m.clean_sensor_cuts || 0;
+  if (cleanActive && m.clean_sensor_fault) {
+    cleanFaultEl.textContent = 'PT2 reading invalid - heating is OFF. It resumes by itself once PT2 reads OK again.';
+  } else if (cleanActive && cuts > 0) {
+    cleanFaultEl.textContent = 'PT2 dropped out ' + cuts + (cuts === 1 ? ' time' : ' times')
+      + ' since START - heating was cut each time and resumed by itself.';
+  } else {
+    cleanFaultEl.textContent = '';
+  }
   if (cleanActive && m.clean_setpoint !== null && document.activeElement !== cleanSetpointInput) {
     cleanSetpointInput.value = m.clean_setpoint;
   }
@@ -9827,6 +9861,8 @@ void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t *payload, size_t length
         cleanSsrOn = false;
         cleanPeakSinceOff = NAN;
         cleanTrackPeak = false;
+        cleanSensorFault = false;
+        cleanSensorCuts = 0;
         cleanLastSwitchMs = millis();
         cleanActive = true;
         Serial.printf("[clean] started, target=%.1fC diff=%.1fC (SSR2 stays off until the next PT2 reading)\n",
